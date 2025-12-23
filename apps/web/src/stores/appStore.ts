@@ -8,7 +8,8 @@ export interface WhaleTrade {
   size: number;
   usdValue: number;
   timestamp: number;
-  question?: string;
+  txHash: string;
+  title?: string;
 }
 
 export interface Wallet {
@@ -31,9 +32,15 @@ export const useAppStore = create<AppState>((set) => ({
   whaleTrades: [],
   connected: false,
   
-  addWhaleTrade: (trade) => set((state) => ({
-    whaleTrades: [trade, ...state.whaleTrades].slice(0, 100)
-  })),
+  addWhaleTrade: (trade) => set((state) => {
+    // Deduplicate by txHash
+    if (state.whaleTrades.some(t => t.txHash === trade.txHash)) {
+      return state;
+    }
+    return {
+      whaleTrades: [trade, ...state.whaleTrades].slice(0, 100)
+    };
+  }),
   
   setConnected: (status) => set({ connected: status })
 }));

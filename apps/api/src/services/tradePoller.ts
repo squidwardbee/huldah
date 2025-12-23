@@ -6,24 +6,24 @@ const DATA_API = 'https://data-api.polymarket.com';
 const WHALE_THRESHOLD = 1000;
 
 interface DataTrade {
-  id: string;
-  taker_order_id: string;
-  market: string;
-  asset_id: string;
+  proxyWallet: string;
   side: string;
-  size: string;
-  price: string;
-  maker_address: string;
-  taker_address: string;
+  asset: string;
+  conditionId: string;
+  size: number;
+  price: number;
   timestamp: number;
-  transaction_hash: string;
+  transactionHash: string;
+  title?: string;
+  outcome?: string;
 }
 
 export class TradePoller {
   private db: Pool;
   private redis: Redis;
-  private lastTimestamp: number = Date.now() - 60000;
+  private lastTimestamp: number = Math.floor(Date.now() / 1000) - 60; // Unix seconds
   private pollInterval: NodeJS.Timeout | null = null;
+  private recentTxHashes: Set<string> = new Set(); // Dedupe cache
 
   constructor(db: Pool, redis: Redis) {
     this.db = db;
@@ -58,13 +58,23 @@ export class TradePoller {
 
   private async processTrade(trade: DataTrade) {
     // Skip trades without wallet address
-    if (!trade.taker_address) {
+    if (!trade.proxyWallet) {
       return;
     }
 
-    const size = parseFloat(trade.size);
-    const price = parseFloat(trade.price);
-    const usdValue = size * price;
+    // Skip already processed trades
+    if (this.recentTxHashes.has(trade.transactionHash)) {
+      return;
+    }
+    this.recentTxHashes.add(trade.transactionHash);
+    
+    // Keep cache size bounded
+    if (this.recentTxHashes.size > 1000) {
+      const first = this.recentTxHashes.values().next().value;
+      if (first) this.recentTxHashes.delete(first);
+    }
+
+    const usdValue = trade.size * trade.price;
     const isWhale = usdValue >= WHALE_THRESHOLD;
 
     // Upsert wallet
@@ -75,7 +85,7 @@ export class TradePoller {
         total_trades = wallets.total_trades + 1,
         total_volume = wallets.total_volume + $2,
         last_active = NOW()
-    `, [trade.taker_address, usdValue]);
+    `, [trade.proxyWallet, usdValue]);
 
     // Insert trade
     await this.db.query(`
@@ -83,37 +93,38 @@ export class TradePoller {
       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, to_timestamp($9), $10)
       ON CONFLICT DO NOTHING
     `, [
-      trade.transaction_hash,
-      trade.taker_address,
-      trade.market,
-      trade.asset_id,
+      trade.transactionHash,
+      trade.proxyWallet,
+      trade.conditionId,
+      trade.asset,
       trade.side,
-      price,
-      size,
+      trade.price,
+      trade.size,
       usdValue,
-      trade.timestamp / 1000,
+      trade.timestamp,
       isWhale
     ]);
 
     if (isWhale) {
-      console.log(`[WHALE] ${trade.taker_address} - $${usdValue.toFixed(0)} ${trade.side}`);
+      console.log(`[WHALE] ${trade.proxyWallet} - $${usdValue.toFixed(0)} ${trade.side}`);
       
       const { rows } = await this.db.query(`
         SELECT total_trades, total_volume, win_count, loss_count
         FROM wallets WHERE address = $1
-      `, [trade.taker_address]);
+      `, [trade.proxyWallet]);
 
       await this.redis.publish('whale_trades', JSON.stringify({
-        wallet: trade.taker_address,
-        marketId: trade.market,
-        tokenId: trade.asset_id,
+        wallet: trade.proxyWallet,
+        marketId: trade.conditionId,
+        tokenId: trade.asset,
         side: trade.side,
-        price,
-        size,
+        price: trade.price,
+        size: trade.size,
         usdValue,
-        timestamp: trade.timestamp,
-        txHash: trade.transaction_hash,
-        walletStats: rows[0]
+        timestamp: trade.timestamp * 1000, // Convert to ms for frontend
+        txHash: trade.transactionHash,
+        walletStats: rows[0],
+        title: trade.title
       }));
     }
   }

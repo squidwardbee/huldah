@@ -44,12 +44,12 @@ export function WhaleFeed() {
           </div>
         ) : (
           <div className="divide-y divide-terminal-border/50">
-            {whaleTrades.map((trade, i) => (
-              <div 
-                key={`${trade.timestamp}-${i}`}
-                className="px-5 py-3 hover:bg-white/[0.02] transition-colors animate-slide-up"
-                style={{ animationDelay: `${i * 20}ms` }}
-              >
+            {          whaleTrades.map((trade, i) => (
+            <div 
+              key={trade.txHash || `${trade.timestamp}-${i}`}
+              className="px-5 py-3 hover:bg-white/[0.02] transition-colors animate-slide-up"
+              style={{ animationDelay: `${Math.min(i, 5) * 20}ms` }}
+            >
                 <div className="flex items-center justify-between mb-2">
                   <div className="flex items-center gap-3">
                     <span 
@@ -69,6 +69,11 @@ export function WhaleFeed() {
                     {formatTime(trade.timestamp)}
                   </span>
                 </div>
+                {trade.title && (
+                  <div className="text-terminal-muted text-xs mb-1 truncate max-w-[280px]">
+                    {trade.title}
+                  </div>
+                )}
                 <div className="flex items-center justify-between">
                   <a 
                     href={`https://polygonscan.com/address/${trade.wallet}`}

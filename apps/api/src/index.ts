@@ -6,6 +6,7 @@ import { Pool } from 'pg';
 import Redis from 'ioredis';
 import cors from 'cors';
 import { TradePoller } from './services/tradePoller.js';
+import { HistoricalBackfill } from './services/historicalBackfill.js';
 
 const app = express();
 app.use(cors());
@@ -83,6 +84,65 @@ app.get('/api/markets', async (_req, res) => {
     LIMIT 100
   `);
   res.json(rows);
+});
+
+// Backfill service
+const backfill = new HistoricalBackfill(db);
+
+// Backfill endpoints
+app.post('/api/backfill/trades', async (req, res) => {
+  const days = parseInt(req.query.days as string) || 30;
+  
+  if (backfill.getStatus().isRunning) {
+    return res.status(409).json({ error: 'Backfill already running', status: backfill.getStatus() });
+  }
+  
+  // Start backfill in background
+  backfill.backfillTrades(days).catch(console.error);
+  
+  res.json({ message: `Started trade backfill for ${days} days`, status: backfill.getStatus() });
+});
+
+app.post('/api/backfill/markets', async (_req, res) => {
+  if (backfill.getStatus().isRunning) {
+    return res.status(409).json({ error: 'Backfill already running', status: backfill.getStatus() });
+  }
+  
+  backfill.backfillMarkets().catch(console.error);
+  
+  res.json({ message: 'Started market backfill' });
+});
+
+app.get('/api/backfill/status', (_req, res) => {
+  res.json(backfill.getStatus());
+});
+
+app.post('/api/backfill/stop', (_req, res) => {
+  backfill.stop();
+  res.json({ message: 'Backfill stopped', status: backfill.getStatus() });
+});
+
+// Stats endpoint
+app.get('/api/stats', async (_req, res) => {
+  const [trades, wallets, whales, markets] = await Promise.all([
+    db.query('SELECT COUNT(*) as count, SUM(usd_value) as volume FROM trades'),
+    db.query('SELECT COUNT(*) as count FROM wallets'),
+    db.query('SELECT COUNT(*) as count FROM trades WHERE is_whale = true'),
+    db.query('SELECT COUNT(*) as total, COUNT(*) FILTER (WHERE resolved = true) as resolved FROM markets')
+  ]);
+  
+  res.json({
+    trades: {
+      count: parseInt(trades.rows[0].count),
+      volume: parseFloat(trades.rows[0].volume) || 0
+    },
+    wallets: parseInt(wallets.rows[0].count),
+    whaleTrades: parseInt(whales.rows[0].count),
+    markets: {
+      total: parseInt(markets.rows[0].total),
+      resolved: parseInt(markets.rows[0].resolved)
+    }
+  });
 });
 
 // HTTP + WebSocket server
