@@ -1,0 +1,103 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --neon-cyan: #00fff5;
+  --neon-magenta: #ff00aa;
+  --neon-amber: #ffaa00;
+  --terminal-bg: #0a0a0f;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  font-family: 'IBM Plex Mono', monospace;
+  background: var(--terminal-bg);
+  color: #e0e0e0;
+  min-height: 100vh;
+}
+
+/* Scanline overlay effect */
+body::before {
+  content: '';
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  pointer-events: none;
+  background: repeating-linear-gradient(
+    0deg,
+    transparent,
+    transparent 2px,
+    rgba(0, 0, 0, 0.03) 2px,
+    rgba(0, 0, 0, 0.03) 4px
+  );
+  z-index: 9999;
+}
+
+/* Grid pattern background */
+#root {
+  background-image: 
+    linear-gradient(rgba(0, 255, 245, 0.03) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(0, 255, 245, 0.03) 1px, transparent 1px);
+  background-size: 50px 50px;
+  min-height: 100vh;
+}
+
+/* Scrollbar styling */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: #12121a;
+}
+
+::-webkit-scrollbar-thumb {
+  background: #2a2a3a;
+  border-radius: 3px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: #3a3a4a;
+}
+
+/* Glow effects */
+.glow-cyan {
+  text-shadow: 0 0 10px var(--neon-cyan), 0 0 20px var(--neon-cyan);
+}
+
+.glow-magenta {
+  text-shadow: 0 0 10px var(--neon-magenta), 0 0 20px var(--neon-magenta);
+}
+
+.glow-amber {
+  text-shadow: 0 0 10px var(--neon-amber), 0 0 20px var(--neon-amber);
+}
+
+/* Card glow on hover */
+.card-glow {
+  transition: box-shadow 0.3s ease;
+}
+
+.card-glow:hover {
+  box-shadow: 0 0 20px rgba(0, 255, 245, 0.1), inset 0 0 20px rgba(0, 255, 245, 0.02);
+}
+
+/* Pulse animation for live indicator */
+@keyframes live-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.5; }
+}
+
+.live-indicator {
+  animation: live-pulse 1.5s ease-in-out infinite;
+}
+
+

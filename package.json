@@ -1,0 +1,21 @@
+{
+  "name": "huldah",
+  "version": "1.0.0",
+  "private": true,
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "dev:api": "pnpm --filter api dev",
+    "dev:web": "pnpm --filter web dev",
+    "dev": "pnpm run dev:api & pnpm run dev:web",
+    "db:up": "docker-compose up -d",
+    "db:down": "docker-compose down"
+  },
+  "devDependencies": {
+    "turbo": "^2.0.0"
+  }
+}
+
+
