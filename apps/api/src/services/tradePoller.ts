@@ -15,15 +15,16 @@ interface DataTrade {
   timestamp: number;
   transactionHash: string;
   title?: string;
+  slug?: string;
   outcome?: string;
 }
 
 export class TradePoller {
   private db: Pool;
   private redis: Redis;
-  private lastTimestamp: number = Math.floor(Date.now() / 1000) - 60; // Unix seconds
+  private lastTimestamp: number = Math.floor(Date.now() / 1000) - 60;
   private pollInterval: NodeJS.Timeout | null = null;
-  private recentTxHashes: Set<string> = new Set(); // Dedupe cache
+  private recentTxHashes: Set<string> = new Set();
 
   constructor(db: Pool, redis: Redis) {
     this.db = db;
@@ -32,7 +33,7 @@ export class TradePoller {
 
   async start() {
     this.pollInterval = setInterval(() => this.poll(), 2000);
-    console.log('[Poller] Started trade polling');
+    console.log('[Poller] Started trade polling (lean mode)');
   }
 
   private async poll() {
@@ -57,18 +58,11 @@ export class TradePoller {
   }
 
   private async processTrade(trade: DataTrade) {
-    // Skip trades without wallet address
-    if (!trade.proxyWallet) {
-      return;
-    }
+    if (!trade.proxyWallet) return;
 
-    // Skip already processed trades
-    if (this.recentTxHashes.has(trade.transactionHash)) {
-      return;
-    }
+    // Dedupe
+    if (this.recentTxHashes.has(trade.transactionHash)) return;
     this.recentTxHashes.add(trade.transactionHash);
-    
-    // Keep cache size bounded
     if (this.recentTxHashes.size > 1000) {
       const first = this.recentTxHashes.values().next().value;
       if (first) this.recentTxHashes.delete(first);
@@ -77,54 +71,65 @@ export class TradePoller {
     const usdValue = trade.size * trade.price;
     const isWhale = usdValue >= WHALE_THRESHOLD;
 
-    // Upsert wallet
+    // Always update wallet stats (aggregated)
     await this.db.query(`
-      INSERT INTO wallets (address, total_trades, total_volume, last_active)
-      VALUES ($1, 1, $2, NOW())
+      INSERT INTO wallets (address, total_trades, total_volume, last_active, first_seen)
+      VALUES ($1, 1, $2, NOW(), NOW())
       ON CONFLICT (address) DO UPDATE SET
         total_trades = wallets.total_trades + 1,
         total_volume = wallets.total_volume + $2,
         last_active = NOW()
     `, [trade.proxyWallet, usdValue]);
 
-    // Insert trade
-    await this.db.query(`
-      INSERT INTO trades (tx_hash, wallet_address, market_id, token_id, side, price, size, usd_value, timestamp, is_whale)
-      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, to_timestamp($9), $10)
-      ON CONFLICT DO NOTHING
-    `, [
-      trade.transactionHash,
-      trade.proxyWallet,
-      trade.conditionId,
-      trade.asset,
-      trade.side,
-      trade.price,
-      trade.size,
-      usdValue,
-      trade.timestamp,
-      isWhale
-    ]);
-
+    // Only store whale trades (>$1000)
     if (isWhale) {
-      console.log(`[WHALE] ${trade.proxyWallet} - $${usdValue.toFixed(0)} ${trade.side}`);
-      
+      // Get wallet stats for enrichment
       const { rows } = await this.db.query(`
-        SELECT total_trades, total_volume, win_count, loss_count
+        SELECT total_trades, total_volume, tags
         FROM wallets WHERE address = $1
       `, [trade.proxyWallet]);
 
+      const walletStats = rows[0] || { total_trades: 0, total_volume: 0, tags: [] };
+
+      // Store in whale_trades
+      await this.db.query(`
+        INSERT INTO whale_trades (
+          tx_hash, wallet_address, market_slug, market_question, side, 
+          price, size, usd_value, timestamp, wallet_tags, wallet_volume, wallet_trade_count
+        )
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, to_timestamp($9), $10, $11, $12)
+        ON CONFLICT (tx_hash) DO NOTHING
+      `, [
+        trade.transactionHash,
+        trade.proxyWallet,
+        trade.slug || null,
+        trade.title || null,
+        trade.side,
+        trade.price,
+        trade.size,
+        usdValue,
+        trade.timestamp,
+        walletStats.tags || [],
+        walletStats.total_volume || 0,
+        walletStats.total_trades || 0
+      ]);
+
+      console.log(`[WHALE] ${trade.proxyWallet} - $${usdValue.toFixed(0)} ${trade.side}`);
+
+      // Broadcast to WebSocket clients
       await this.redis.publish('whale_trades', JSON.stringify({
         wallet: trade.proxyWallet,
-        marketId: trade.conditionId,
-        tokenId: trade.asset,
         side: trade.side,
         price: trade.price,
         size: trade.size,
         usdValue,
-        timestamp: trade.timestamp * 1000, // Convert to ms for frontend
+        timestamp: trade.timestamp * 1000,
         txHash: trade.transactionHash,
-        walletStats: rows[0],
-        title: trade.title
+        marketQuestion: trade.title,
+        marketSlug: trade.slug,
+        walletTags: walletStats.tags || [],
+        walletVolume: walletStats.total_volume || 0,
+        walletTradeCount: walletStats.total_trades || 0
       }));
     }
   }
@@ -135,5 +140,3 @@ export class TradePoller {
     }
   }
 }
-
-

@@ -2,14 +2,17 @@ import { create } from 'zustand';
 
 export interface WhaleTrade {
   wallet: string;
-  marketId: string;
   side: string;
   price: number;
   size: number;
   usdValue: number;
   timestamp: number;
   txHash: string;
-  title?: string;
+  marketQuestion?: string;
+  marketSlug?: string;
+  walletTags?: string[];
+  walletVolume?: number;
+  walletTradeCount?: number;
 }
 
 export interface Wallet {
@@ -19,6 +22,9 @@ export interface Wallet {
   win_rate: number;
   win_count: number;
   loss_count: number;
+  tags?: string[];
+  insider_score?: number;
+  smart_money_score?: number;
 }
 
 interface AppState {
@@ -44,5 +50,3 @@ export const useAppStore = create<AppState>((set) => ({
   
   setConnected: (status) => set({ connected: status })
 }));
-
-

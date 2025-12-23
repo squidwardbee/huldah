@@ -18,7 +18,9 @@ interface DataTrade {
   timestamp: number; // Unix seconds
   transactionHash: string;
   title?: string;
+  slug?: string;
   outcome?: string;
+  outcomeIndex?: number;
 }
 
 interface GammaMarket {
@@ -137,10 +139,10 @@ export class HistoricalBackfill {
           last_active = GREATEST(wallets.last_active, to_timestamp($3))
       `, [trade.proxyWallet, usdValue, trade.timestamp]);
 
-      // Insert trade (ignore duplicates)
+      // Insert trade with all fields (ignore duplicates)
       await this.db.query(`
-        INSERT INTO trades (tx_hash, wallet_address, market_id, token_id, side, price, size, usd_value, timestamp, is_whale)
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, to_timestamp($9), $10)
+        INSERT INTO trades (tx_hash, wallet_address, market_id, token_id, side, price, size, usd_value, timestamp, is_whale, outcome, outcome_index, title, slug)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, to_timestamp($9), $10, $11, $12, $13, $14)
         ON CONFLICT (tx_hash) DO NOTHING
       `, [
         trade.transactionHash,
@@ -152,13 +154,17 @@ export class HistoricalBackfill {
         trade.size,
         usdValue,
         trade.timestamp,
-        isWhale
+        isWhale,
+        trade.outcome || null,
+        trade.outcomeIndex ?? null,
+        trade.title || null,
+        trade.slug || null
       ]);
     }
   }
 
-  async backfillMarkets(): Promise<void> {
-    console.log('[Backfill] Starting market backfill...');
+  async backfillMarkets(closedOnly: boolean = false): Promise<void> {
+    console.log(`[Backfill] Starting market backfill (closedOnly=${closedOnly})...`);
     
     let offset = 0;
     const limit = 100;
@@ -167,8 +173,11 @@ export class HistoricalBackfill {
 
     while (true) {
       try {
+        const params: Record<string, unknown> = { limit, offset };
+        if (closedOnly) params.closed = true;
+        
         const { data: markets } = await axios.get<GammaMarket[]>(`${GAMMA_API}/markets`, {
-          params: { limit, offset, closed: true },
+          params,
           timeout: 10000
         });
 

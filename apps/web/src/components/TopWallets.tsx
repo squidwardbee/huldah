@@ -16,6 +16,14 @@ function formatAddress(address: string): string {
   return `${address.slice(0, 8)}···${address.slice(-4)}`;
 }
 
+const TAG_EMOJI: Record<string, string> = {
+  whale: '🐋',
+  smart_money: '🧠',
+  insider: '👁',
+  active: '⚡',
+  new: '✨',
+};
+
 export function TopWallets() {
   const { data: wallets, isLoading, error } = useQuery<Wallet[]>({
     queryKey: ['topWallets'],
@@ -51,11 +59,11 @@ export function TopWallets() {
           <table className="w-full">
             <thead>
               <tr className="text-terminal-muted text-xs uppercase tracking-wider border-b border-terminal-border/50">
-                <th className="px-5 py-3 text-left font-medium">#</th>
-                <th className="px-5 py-3 text-left font-medium">Wallet</th>
-                <th className="px-5 py-3 text-right font-medium">Volume</th>
-                <th className="px-5 py-3 text-right font-medium">Trades</th>
-                <th className="px-5 py-3 text-right font-medium">Win Rate</th>
+                <th className="px-4 py-3 text-left font-medium">#</th>
+                <th className="px-4 py-3 text-left font-medium">Wallet</th>
+                <th className="px-4 py-3 text-center font-medium">Tags</th>
+                <th className="px-4 py-3 text-right font-medium">Volume</th>
+                <th className="px-4 py-3 text-right font-medium">Win%</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-terminal-border/30">
@@ -65,14 +73,14 @@ export function TopWallets() {
                   className="hover:bg-white/[0.02] transition-colors animate-fade-in"
                   style={{ animationDelay: `${idx * 30}ms` }}
                 >
-                  <td className="px-5 py-3">
+                  <td className="px-4 py-3">
                     <span className={`font-mono text-sm ${
                       idx < 3 ? 'text-neon-amber font-bold' : 'text-terminal-muted'
                     }`}>
                       {String(idx + 1).padStart(2, '0')}
                     </span>
                   </td>
-                  <td className="px-5 py-3">
+                  <td className="px-4 py-3">
                     <a
                       href={`https://polygonscan.com/address/${wallet.address}`}
                       target="_blank"
@@ -82,23 +90,33 @@ export function TopWallets() {
                       {formatAddress(wallet.address)}
                     </a>
                   </td>
-                  <td className="px-5 py-3 text-right">
+                  <td className="px-4 py-3 text-center">
+                    <div className="flex items-center justify-center gap-1">
+                      {wallet.tags && wallet.tags.length > 0 ? (
+                        wallet.tags.slice(0, 3).map(tag => (
+                          <span key={tag} title={tag} className="text-sm">
+                            {TAG_EMOJI[tag] || '•'}
+                          </span>
+                        ))
+                      ) : (
+                        <span className="text-terminal-muted/40">—</span>
+                      )}
+                    </div>
+                  </td>
+                  <td className="px-4 py-3 text-right">
                     <span className="text-white font-mono text-sm font-semibold">
                       {formatVolume(Number(wallet.total_volume))}
                     </span>
                   </td>
-                  <td className="px-5 py-3 text-right">
-                    <span className="text-terminal-muted font-mono text-sm">
-                      {wallet.total_trades}
-                    </span>
-                  </td>
-                  <td className="px-5 py-3 text-right">
+                  <td className="px-4 py-3 text-right">
                     <span className={`font-mono text-sm font-medium ${
-                      wallet.win_rate > 0.5 
+                      wallet.win_rate > 0.6 
                         ? 'text-neon-green' 
-                        : wallet.win_rate > 0 
-                          ? 'text-neon-red' 
-                          : 'text-terminal-muted'
+                        : wallet.win_rate > 0.4
+                          ? 'text-neon-amber'
+                          : wallet.win_rate > 0 
+                            ? 'text-neon-red' 
+                            : 'text-terminal-muted'
                     }`}>
                       {wallet.win_rate > 0 
                         ? `${(wallet.win_rate * 100).toFixed(0)}%` 
@@ -114,5 +132,3 @@ export function TopWallets() {
     </div>
   );
 }
-
-

@@ -1,4 +1,7 @@
-import { useAppStore } from '../stores/appStore';
+import { useQuery } from '@tanstack/react-query';
+import { useAppStore, WhaleTrade } from '../stores/appStore';
+import { getRecentWhales } from '../lib/api';
+import { useEffect } from 'react';
 
 function formatTime(timestamp: number): string {
   const date = new Date(timestamp);
@@ -14,8 +17,83 @@ function formatAddress(address: string): string {
   return `${address.slice(0, 6)}···${address.slice(-4)}`;
 }
 
+function formatVolume(volume: number): string {
+  if (volume >= 1000000) return `$${(volume / 1000000).toFixed(1)}M`;
+  if (volume >= 1000) return `$${(volume / 1000).toFixed(0)}K`;
+  return `$${volume.toFixed(0)}`;
+}
+
+const TAG_STYLES: Record<string, { bg: string; text: string; label: string }> = {
+  whale: { bg: 'bg-neon-cyan/20', text: 'text-neon-cyan', label: '🐋' },
+  smart_money: { bg: 'bg-neon-green/20', text: 'text-neon-green', label: '🧠' },
+  insider: { bg: 'bg-neon-amber/20', text: 'text-neon-amber', label: '👁' },
+  active: { bg: 'bg-neon-magenta/20', text: 'text-neon-magenta', label: '⚡' },
+  new: { bg: 'bg-white/10', text: 'text-white', label: '✨' },
+};
+
+function WalletTag({ tag }: { tag: string }) {
+  const style = TAG_STYLES[tag] || { bg: 'bg-white/10', text: 'text-white', label: tag };
+  return (
+    <span 
+      className={`${style.bg} ${style.text} text-xs px-1.5 py-0.5 rounded font-mono`}
+      title={tag}
+    >
+      {style.label}
+    </span>
+  );
+}
+
+// Transform DB record to WhaleTrade format
+interface DbWhaleTrade {
+  tx_hash: string;
+  wallet_address: string;
+  market_question?: string;
+  market_slug?: string;
+  side: string;
+  price: string;
+  size: string;
+  usd_value: string;
+  timestamp: string;
+  wallet_tags?: string[];
+  wallet_volume?: string;
+  wallet_trade_count?: number;
+}
+
+function transformDbTrade(dbTrade: DbWhaleTrade): WhaleTrade {
+  return {
+    txHash: dbTrade.tx_hash,
+    wallet: dbTrade.wallet_address,
+    marketQuestion: dbTrade.market_question,
+    marketSlug: dbTrade.market_slug,
+    side: dbTrade.side,
+    price: parseFloat(dbTrade.price),
+    size: parseFloat(dbTrade.size),
+    usdValue: parseFloat(dbTrade.usd_value),
+    timestamp: new Date(dbTrade.timestamp).getTime(),
+    walletTags: dbTrade.wallet_tags || [],
+    walletVolume: dbTrade.wallet_volume ? parseFloat(dbTrade.wallet_volume) : 0,
+    walletTradeCount: dbTrade.wallet_trade_count || 0,
+  };
+}
+
 export function WhaleFeed() {
-  const { whaleTrades, connected } = useAppStore();
+  const { whaleTrades, connected, addWhaleTrade } = useAppStore();
+
+  // Load initial trades from API
+  const { data: initialTrades } = useQuery<DbWhaleTrade[]>({
+    queryKey: ['whaleTrades'],
+    queryFn: getRecentWhales,
+    staleTime: 30000,
+  });
+
+  // Add initial trades to store (only once)
+  useEffect(() => {
+    if (initialTrades && initialTrades.length > 0) {
+      initialTrades.forEach(trade => {
+        addWhaleTrade(transformDbTrade(trade));
+      });
+    }
+  }, [initialTrades, addWhaleTrade]);
 
   return (
     <div className="bg-terminal-surface/80 backdrop-blur border border-terminal-border rounded-lg overflow-hidden card-glow">
@@ -44,12 +122,12 @@ export function WhaleFeed() {
           </div>
         ) : (
           <div className="divide-y divide-terminal-border/50">
-            {          whaleTrades.map((trade, i) => (
-            <div 
-              key={trade.txHash || `${trade.timestamp}-${i}`}
-              className="px-5 py-3 hover:bg-white/[0.02] transition-colors animate-slide-up"
-              style={{ animationDelay: `${Math.min(i, 5) * 20}ms` }}
-            >
+            {whaleTrades.map((trade, i) => (
+              <div 
+                key={trade.txHash || `${trade.timestamp}-${i}`}
+                className="px-5 py-3 hover:bg-white/[0.02] transition-colors animate-slide-up"
+                style={{ animationDelay: `${Math.min(i, 5) * 20}ms` }}
+              >
                 <div className="flex items-center justify-between mb-2">
                   <div className="flex items-center gap-3">
                     <span 
@@ -69,23 +147,46 @@ export function WhaleFeed() {
                     {formatTime(trade.timestamp)}
                   </span>
                 </div>
-                {trade.title && (
-                  <div className="text-terminal-muted text-xs mb-1 truncate max-w-[280px]">
-                    {trade.title}
+
+                {/* Market title */}
+                {trade.marketQuestion && (
+                  <div className="text-terminal-muted text-xs mb-2 truncate max-w-[320px]">
+                    {trade.marketQuestion}
                   </div>
                 )}
+
+                {/* Wallet row with tags */}
                 <div className="flex items-center justify-between">
-                  <a 
-                    href={`https://polygonscan.com/address/${trade.wallet}`}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="text-neon-cyan/70 hover:text-neon-cyan text-sm font-mono transition-colors"
-                  >
-                    {formatAddress(trade.wallet)}
-                  </a>
-                  <span className="text-terminal-muted/60 text-xs">
-                    @ {trade.price.toFixed(2)}
-                  </span>
+                  <div className="flex items-center gap-2">
+                    <a 
+                      href={`https://polygonscan.com/address/${trade.wallet}`}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="text-neon-cyan/70 hover:text-neon-cyan text-sm font-mono transition-colors"
+                    >
+                      {formatAddress(trade.wallet)}
+                    </a>
+                    
+                    {/* Tags */}
+                    {trade.walletTags && trade.walletTags.length > 0 && (
+                      <div className="flex items-center gap-1">
+                        {trade.walletTags.slice(0, 3).map(tag => (
+                          <WalletTag key={tag} tag={tag} />
+                        ))}
+                      </div>
+                    )}
+                  </div>
+
+                  <div className="flex items-center gap-3 text-xs">
+                    {trade.walletVolume && trade.walletVolume > 0 && (
+                      <span className="text-terminal-muted/60" title="Wallet total volume">
+                        {formatVolume(trade.walletVolume)}
+                      </span>
+                    )}
+                    <span className="text-terminal-muted/60">
+                      @ {trade.price.toFixed(2)}
+                    </span>
+                  </div>
                 </div>
               </div>
             ))}
@@ -95,5 +196,3 @@ export function WhaleFeed() {
     </div>
   );
 }
-
-
