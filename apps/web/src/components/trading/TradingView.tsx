@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useCallback } from 'react';
 import { MarketSelector } from './MarketSelector';
 import { Orderbook } from './Orderbook';
 import { OrderForm } from './OrderForm';
@@ -20,6 +20,13 @@ interface Market {
 export function TradingView() {
   const [selectedMarket, setSelectedMarket] = useState<Market | null>(null);
   const [orderPrice, setOrderPrice] = useState<number>(0.5);
+  const [bestBid, setBestBid] = useState<number | undefined>();
+  const [bestAsk, setBestAsk] = useState<number | undefined>();
+
+  const handleBestPricesChange = useCallback((bid: number | undefined, ask: number | undefined) => {
+    setBestBid(bid);
+    setBestAsk(ask);
+  }, []);
 
   const handleSelectToken = (_conditionId: string, market: Market) => {
     setSelectedMarket(market);
@@ -70,6 +77,7 @@ export function TradingView() {
         <Orderbook 
           tokenId={yesTokenId} 
           onPriceClick={handlePriceClick}
+          onBestPricesChange={handleBestPricesChange}
         />
 
         {/* Mobile Positions */}
@@ -84,6 +92,8 @@ export function TradingView() {
           tokenId={yesTokenId}
           marketName={selectedMarket?.question || 'Select a market'}
           currentPrice={orderPrice}
+          bestBid={bestBid}
+          bestAsk={bestAsk}
           onOrderPlaced={() => {
             // Could trigger refetch of positions/orders
           }}

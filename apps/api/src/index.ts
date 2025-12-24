@@ -276,10 +276,21 @@ app.get('/api/markets/stats', async (_req, res) => {
 });
 
 // Get markets list
+// By default shows only open (unresolved) markets
+// Use ?resolved=true to see resolved markets, ?all=true to see everything
 app.get('/api/markets', async (req, res) => {
   try {
-    const limit = Math.min(parseInt(req.query.limit as string) || 50, 200);
-    const resolved = req.query.resolved === 'true';
+    const limit = Math.min(parseInt(req.query.limit as string) || 100, 500);
+    const showAll = req.query.all === 'true';
+    const showResolved = req.query.resolved === 'true';
+    
+    // Default: show only open (unresolved) markets
+    // ?resolved=true: show only resolved markets
+    // ?all=true: show all markets
+    let resolvedFilter: boolean | null = null;
+    if (!showAll) {
+      resolvedFilter = showResolved ? true : false;
+    }
     
     const { rows } = await db.query(`
       SELECT 
@@ -297,13 +308,13 @@ app.get('/api/markets', async (req, res) => {
         yes_token_id,
         no_token_id
       FROM markets
-      WHERE ($1::boolean IS NULL OR resolved = $1)
+      WHERE ($1::boolean IS NULL OR COALESCE(resolved, false) = $1)
         AND question IS NOT NULL
       ORDER BY 
-        CASE WHEN resolved = false OR resolved IS NULL THEN 0 ELSE 1 END,
-        volume DESC NULLS LAST
+        volume DESC NULLS LAST,
+        question ASC
       LIMIT $2
-    `, [resolved || null, limit]);
+    `, [resolvedFilter, limit]);
     
     res.json(rows);
   } catch (err) {
@@ -648,10 +659,23 @@ app.post('/api/auth/challenge', async (req, res) => {
       return res.status(400).json({ error: 'Address is required' });
     }
     
+    // Validate address format
+    if (!/^0x[a-fA-F0-9]{40}$/.test(address)) {
+      return res.status(400).json({ error: 'Invalid address format' });
+    }
+    
+    console.log('[Auth] Challenge requested for', address);
     const challenge = await userManager.generateAuthChallenge(address);
+    console.log('[Auth] Challenge generated, expires:', challenge.expiresAt);
     res.json(challenge);
-  } catch (err) {
+  } catch (err: any) {
     console.error('Error generating auth challenge:', err);
+    // Return more specific error messages
+    if (err.message?.includes('migration')) {
+      return res.status(500).json({ 
+        error: 'Database not initialized. Please run migration 005_multi_user_trading.sql' 
+      });
+    }
     res.status(500).json({ error: 'Failed to generate challenge' });
   }
 });
@@ -665,6 +689,18 @@ app.post('/api/auth/login', async (req, res) => {
       return res.status(400).json({ error: 'Address and signature are required' });
     }
     
+    // Validate address format
+    if (!/^0x[a-fA-F0-9]{40}$/.test(address)) {
+      return res.status(400).json({ error: 'Invalid address format' });
+    }
+    
+    // Validate signature format
+    if (!/^0x[a-fA-F0-9]{130}$/.test(signature)) {
+      return res.status(400).json({ error: 'Invalid signature format' });
+    }
+    
+    console.log('[Auth] Login attempt for', address);
+    
     const ipAddress = req.ip || req.socket.remoteAddress;
     const userAgent = req.headers['user-agent'];
     
@@ -676,11 +712,16 @@ app.post('/api/auth/login', async (req, res) => {
     );
     
     if (!session) {
-      return res.status(401).json({ error: 'Authentication failed' });
+      console.log('[Auth] Authentication failed for', address);
+      return res.status(401).json({ 
+        error: 'Authentication failed. Please request a new challenge and sign again.',
+        hint: 'The challenge may have expired or was already used'
+      });
     }
     
+    console.log('[Auth] Login successful for', address, 'userId:', session.userId);
     res.json(session);
-  } catch (err) {
+  } catch (err: any) {
     console.error('Error authenticating:', err);
     res.status(500).json({ error: 'Failed to authenticate' });
   }

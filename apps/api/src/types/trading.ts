@@ -6,7 +6,12 @@
 export type OrderSide = 'BUY' | 'SELL';
 
 // Order Type
-export type OrderType = 'GTC' | 'GTD' | 'FOK' | 'IOC';
+// GTC = Good Till Cancelled (limit order, stays on book)
+// GTD = Good Till Date
+// FOK = Fill Or Kill (market order - must fill immediately or cancel)
+// IOC = Immediate Or Cancel (partial fills allowed)
+// MARKET = Market order (convenience alias for FOK at market price)
+export type OrderType = 'GTC' | 'GTD' | 'FOK' | 'IOC' | 'MARKET';
 
 // Transaction State Machine
 export type TransactionState = 

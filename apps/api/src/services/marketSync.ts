@@ -55,7 +55,7 @@ export class MarketSyncService {
     console.log('[MarketSync] Checking for resolved markets...');
 
     try {
-      const closedMarkets = await this.gamma.getRecentlyClosedMarkets(500);
+      const closedMarkets = await this.gamma.getAllClosedMarkets();
       console.log(`[MarketSync] Fetched ${closedMarkets.length} closed markets`);
 
       let resolved = 0;

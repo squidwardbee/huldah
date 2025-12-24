@@ -60,42 +60,59 @@ export class GammaClient {
     const markets: GammaMarket[] = [];
     let offset = 0;
     const limit = 100;
-    const maxMarkets = 500; // Limit total to avoid too many requests
 
-    while (markets.length < maxMarkets) {
+    console.log('[GammaClient] Fetching all active markets...');
+
+    // Keep fetching until no more markets
+    while (true) {
       try {
         const batch = await this.getActiveMarkets(limit, offset);
         if (batch.length === 0) break;
         markets.push(...batch);
         offset += limit;
-        if (batch.length < limit) break;
+        
+        // Log progress every 500 markets
+        if (markets.length % 500 === 0) {
+          console.log(`[GammaClient] Fetched ${markets.length} markets so far...`);
+        }
+        
+        if (batch.length < limit) break; // Last page
       } catch (err) {
-        console.error('[GammaClient] Error fetching markets:', err);
+        console.error('[GammaClient] Error fetching markets at offset', offset, err);
         break;
       }
     }
 
+    console.log(`[GammaClient] Total active markets fetched: ${markets.length}`);
     return markets;
   }
 
-  async getRecentlyClosedMarkets(limit = 200): Promise<GammaMarket[]> {
+  async getAllClosedMarkets(): Promise<GammaMarket[]> {
     const markets: GammaMarket[] = [];
     let offset = 0;
     const batchSize = 100;
 
-    while (markets.length < limit) {
+    console.log('[GammaClient] Fetching all closed markets...');
+
+    while (true) {
       try {
         const batch = await this.getClosedMarkets(batchSize, offset);
         if (batch.length === 0) break;
         markets.push(...batch);
         offset += batchSize;
+        
+        if (markets.length % 500 === 0) {
+          console.log(`[GammaClient] Fetched ${markets.length} closed markets so far...`);
+        }
+        
         if (batch.length < batchSize) break;
       } catch (err) {
-        console.error('[GammaClient] Error fetching closed markets:', err);
+        console.error('[GammaClient] Error fetching closed markets at offset', offset, err);
         break;
       }
     }
 
-    return markets.slice(0, limit);
+    console.log(`[GammaClient] Total closed markets fetched: ${markets.length}`);
+    return markets;
   }
 }

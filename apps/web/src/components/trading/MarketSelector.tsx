@@ -24,19 +24,25 @@ export function MarketSelector({ selectedTokenId, onSelectToken }: MarketSelecto
   
   const { data: markets = [], isLoading } = useQuery({
     queryKey: ['markets'],
-    queryFn: () => getMarkets(100),
+    queryFn: () => getMarkets(200), // Fetch more markets (all open by default)
     staleTime: 60000,
   });
 
+  // Filter by search and only show open markets
   const filteredMarkets = markets.filter((m: Market) =>
-    m.question && m.question.toLowerCase().includes(search.toLowerCase())
+    m.question && 
+    m.question.toLowerCase().includes(search.toLowerCase()) &&
+    !m.resolved // Only show open markets
   );
 
   return (
     <div className="bg-terminal-surface/80 border border-terminal-border rounded-lg overflow-hidden">
       {/* Header */}
       <div className="px-4 py-3 border-b border-terminal-border">
-        <h3 className="text-white font-mono text-sm font-semibold mb-3">SELECT MARKET</h3>
+        <div className="flex items-center justify-between mb-3">
+          <h3 className="text-white font-mono text-sm font-semibold">OPEN MARKETS</h3>
+          <span className="text-neon-cyan text-xs font-mono">{filteredMarkets.length}</span>
+        </div>
         <input
           type="text"
           value={search}
@@ -68,7 +74,7 @@ export function MarketSelector({ selectedTokenId, onSelectToken }: MarketSelecto
           </div>
         ) : (
           <div className="divide-y divide-terminal-border/30">
-            {filteredMarkets.slice(0, 20).map((market: Market) => {
+            {filteredMarkets.slice(0, 50).map((market: Market) => {
               // Use condition_id as identifier for now - actual token_id fetched on demand
               const tokenId = market.condition_id;
               const isSelected = selectedTokenId === tokenId;
@@ -83,18 +89,16 @@ export function MarketSelector({ selectedTokenId, onSelectToken }: MarketSelecto
                       ? 'bg-neon-cyan/10 border-l-2 border-neon-cyan' 
                       : 'hover:bg-terminal-bg border-l-2 border-transparent'
                     }
-                    ${market.resolved ? 'opacity-60' : ''}
                   `}
                 >
                   <div className="flex items-start gap-2">
                     <div className="text-white text-sm leading-tight mb-1 line-clamp-2 flex-1">
                       {market.question}
                     </div>
-                    {market.resolved && (
-                      <span className="text-[10px] px-1.5 py-0.5 bg-terminal-muted/20 text-terminal-muted rounded shrink-0">
-                        RESOLVED
-                      </span>
-                    )}
+                    {/* Price indicator */}
+                    <span className="text-neon-green font-mono text-sm shrink-0">
+                      {((market.outcome_yes_price || 0.5) * 100).toFixed(0)}¢
+                    </span>
                   </div>
                   <div className="flex items-center gap-3 text-xs">
                     <span className="text-terminal-muted">

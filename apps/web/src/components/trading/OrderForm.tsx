@@ -6,19 +6,30 @@ interface OrderFormProps {
   tokenId: string;
   marketName: string;
   currentPrice?: number;
+  bestBid?: number;
+  bestAsk?: number;
   onOrderPlaced?: () => void;
 }
 
-export function OrderForm({ tokenId, marketName, currentPrice = 0.5, onOrderPlaced }: OrderFormProps) {
+type OrderMode = 'LIMIT' | 'MARKET';
+
+export function OrderForm({ tokenId, marketName, currentPrice = 0.5, bestBid, bestAsk, onOrderPlaced }: OrderFormProps) {
   const { token, isAuthenticated } = useAuthStore();
   const [side, setSide] = useState<'BUY' | 'SELL'>('BUY');
+  const [orderMode, setOrderMode] = useState<OrderMode>('LIMIT');
   const [price, setPrice] = useState(currentPrice.toString());
   const [size, setSize] = useState('10');
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
 
-  const priceNum = parseFloat(price) || 0;
+  // For market orders, use best bid/ask price
+  const marketPrice = side === 'BUY' 
+    ? (bestAsk || currentPrice) 
+    : (bestBid || currentPrice);
+  
+  const effectivePrice = orderMode === 'MARKET' ? marketPrice : (parseFloat(price) || 0);
+  const priceNum = effectivePrice;
   const sizeNum = parseFloat(size) || 0;
   const cost = priceNum * sizeNum;
   const potentialProfit = side === 'BUY' 
@@ -37,11 +48,13 @@ export function OrderForm({ tokenId, marketName, currentPrice = 0.5, onOrderPlac
       const result = await placeOrder(token, {
         tokenId,
         side,
-        price: priceNum,
+        price: effectivePrice,
         size: sizeNum,
+        orderType: orderMode === 'MARKET' ? 'FOK' : 'GTC',
       });
 
-      setSuccess(`Order placed! ID: ${result.orderId?.slice(0, 8)}...`);
+      const orderTypeLabel = orderMode === 'MARKET' ? 'Market' : 'Limit';
+      setSuccess(`${orderTypeLabel} order placed! ID: ${result.orderId?.slice(0, 8)}...`);
       onOrderPlaced?.();
       
       // Clear after 3 seconds
@@ -91,51 +104,100 @@ export function OrderForm({ tokenId, marketName, currentPrice = 0.5, onOrderPlac
       </div>
 
       <form onSubmit={handleSubmit} className="p-4 space-y-4">
-        {/* Price Input */}
-        <div>
-          <label className="block text-terminal-muted text-xs uppercase tracking-wider mb-2">
-            Price (¢)
-          </label>
-          <div className="relative">
-            <input
-              type="number"
-              value={price}
-              onChange={(e) => setPrice(e.target.value)}
-              step="0.01"
-              min="0.01"
-              max="0.99"
-              className="
-                w-full bg-terminal-bg border border-terminal-border rounded-lg
-                px-4 py-3 font-mono text-white text-lg
-                focus:outline-none focus:border-neon-cyan
-                transition-colors
-              "
-              placeholder="0.50"
-            />
-            <div className="absolute right-3 top-1/2 -translate-y-1/2 text-terminal-muted text-sm">
-              ¢
+        {/* Order Type Toggle */}
+        <div className="flex gap-2">
+          <button
+            type="button"
+            onClick={() => setOrderMode('LIMIT')}
+            className={`
+              flex-1 py-2 text-xs font-mono font-bold rounded-lg border transition-all
+              ${orderMode === 'LIMIT'
+                ? 'border-neon-cyan text-neon-cyan bg-neon-cyan/10'
+                : 'border-terminal-border text-terminal-muted hover:border-terminal-muted'
+              }
+            `}
+          >
+            LIMIT
+          </button>
+          <button
+            type="button"
+            onClick={() => setOrderMode('MARKET')}
+            className={`
+              flex-1 py-2 text-xs font-mono font-bold rounded-lg border transition-all
+              ${orderMode === 'MARKET'
+                ? 'border-neon-amber text-neon-amber bg-neon-amber/10'
+                : 'border-terminal-border text-terminal-muted hover:border-terminal-muted'
+              }
+            `}
+          >
+            MARKET
+          </button>
+        </div>
+
+        {/* Price Input (only for limit orders) */}
+        {orderMode === 'LIMIT' ? (
+          <div>
+            <label className="block text-terminal-muted text-xs uppercase tracking-wider mb-2">
+              Price (¢)
+            </label>
+            <div className="relative">
+              <input
+                type="number"
+                value={price}
+                onChange={(e) => setPrice(e.target.value)}
+                step="0.01"
+                min="0.01"
+                max="0.99"
+                className="
+                  w-full bg-terminal-bg border border-terminal-border rounded-lg
+                  px-4 py-3 font-mono text-white text-lg
+                  focus:outline-none focus:border-neon-cyan
+                  transition-colors
+                "
+                placeholder="0.50"
+              />
+              <div className="absolute right-3 top-1/2 -translate-y-1/2 text-terminal-muted text-sm">
+                ¢
+              </div>
+            </div>
+            {/* Quick price buttons */}
+            <div className="flex gap-2 mt-2">
+              {[0.25, 0.50, 0.75, currentPrice].filter((v, i, a) => a.indexOf(v) === i).map((p) => (
+                <button
+                  key={p}
+                  type="button"
+                  onClick={() => setPrice(p.toString())}
+                  className={`
+                    flex-1 py-1 text-xs font-mono rounded border transition-all
+                    ${parseFloat(price) === p 
+                      ? 'border-neon-cyan text-neon-cyan bg-neon-cyan/10' 
+                      : 'border-terminal-border text-terminal-muted hover:border-terminal-muted'
+                    }
+                  `}
+                >
+                  {(p * 100).toFixed(0)}¢
+                </button>
+              ))}
             </div>
           </div>
-          {/* Quick price buttons */}
-          <div className="flex gap-2 mt-2">
-            {[0.25, 0.50, 0.75, currentPrice].filter((v, i, a) => a.indexOf(v) === i).map((p) => (
-              <button
-                key={p}
-                type="button"
-                onClick={() => setPrice(p.toString())}
-                className={`
-                  flex-1 py-1 text-xs font-mono rounded border transition-all
-                  ${parseFloat(price) === p 
-                    ? 'border-neon-cyan text-neon-cyan bg-neon-cyan/10' 
-                    : 'border-terminal-border text-terminal-muted hover:border-terminal-muted'
-                  }
-                `}
-              >
-                {(p * 100).toFixed(0)}¢
-              </button>
-            ))}
+        ) : (
+          <div className="bg-terminal-bg rounded-lg p-3">
+            <div className="text-terminal-muted text-xs uppercase tracking-wider mb-1">
+              Market Price
+            </div>
+            <div className="flex items-baseline gap-2">
+              <span className="text-2xl font-mono text-neon-amber">
+                {(marketPrice * 100).toFixed(1)}¢
+              </span>
+              <span className="text-terminal-muted text-xs">
+                ({side === 'BUY' ? 'Best Ask' : 'Best Bid'})
+              </span>
+            </div>
+            <div className="text-terminal-muted text-xs mt-2">
+              ⚡ Executes immediately at best available price
+            </div>
           </div>
-        </div>
+        )}
 
         {/* Size Input */}
         <div>
@@ -210,13 +272,15 @@ export function OrderForm({ tokenId, marketName, currentPrice = 0.5, onOrderPlac
         {/* Submit Button */}
         <button
           type="submit"
-          disabled={!isAuthenticated || isSubmitting || priceNum <= 0 || sizeNum <= 0}
+          disabled={!isAuthenticated || isSubmitting || effectivePrice <= 0 || sizeNum <= 0}
           className={`
             w-full py-4 rounded-lg font-mono font-bold text-sm
             transition-all duration-200
             disabled:opacity-50 disabled:cursor-not-allowed
             ${!isAuthenticated 
               ? 'bg-terminal-muted text-white'
+              : orderMode === 'MARKET'
+              ? 'bg-neon-amber text-black hover:bg-neon-amber/80'
               : side === 'BUY'
               ? 'bg-neon-green text-black hover:bg-neon-green/80'
               : 'bg-neon-red text-white hover:bg-neon-red/80'
@@ -227,8 +291,10 @@ export function OrderForm({ tokenId, marketName, currentPrice = 0.5, onOrderPlac
             '⚡ CONNECT WALLET TO TRADE'
           ) : isSubmitting ? (
             <span className="animate-pulse">PLACING ORDER...</span>
+          ) : orderMode === 'MARKET' ? (
+            `⚡ ${side} ${sizeNum} NOW`
           ) : (
-            `${side} ${sizeNum} @ ${(priceNum * 100).toFixed(0)}¢`
+            `${side} ${sizeNum} @ ${(effectivePrice * 100).toFixed(0)}¢`
           )}
         </button>
       </form>

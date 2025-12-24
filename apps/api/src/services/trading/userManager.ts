@@ -71,26 +71,43 @@ export class UserManager {
    * Generate authentication challenge for wallet signature
    */
   async generateAuthChallenge(eoaAddress: string): Promise<AuthChallenge> {
+    const address = eoaAddress.toLowerCase();
     const nonce = crypto.randomBytes(32).toString('hex');
-    const expiresAt = new Date(Date.now() + NONCE_EXPIRY_MS);
     
-    // Store nonce
-    await this.db.query(`
-      INSERT INTO user_nonces (eoa_address, nonce, expires_at)
-      VALUES ($1, $2, $3)
-      ON CONFLICT (eoa_address) DO UPDATE SET
-        nonce = $2,
-        expires_at = $3,
-        created_at = NOW()
-    `, [eoaAddress.toLowerCase(), nonce, expiresAt]);
+    console.log('[UserManager] Generating auth challenge for', address);
+    
+    // Store nonce - use database NOW() + interval for timezone-safe expiry
+    // This ensures expires_at is calculated in the same timezone as the comparison
+    try {
+      const result = await this.db.query(`
+        INSERT INTO user_nonces (eoa_address, nonce, expires_at)
+        VALUES ($1, $2, NOW() + INTERVAL '5 minutes')
+        ON CONFLICT (eoa_address) DO UPDATE SET
+          nonce = $2,
+          expires_at = NOW() + INTERVAL '5 minutes',
+          created_at = NOW()
+        RETURNING expires_at
+      `, [address, nonce]);
+      
+      const expiresAt = new Date(result.rows[0].expires_at);
+      console.log('[UserManager] Nonce stored successfully for', address, 'expires at', expiresAt.toISOString());
+      
+      const message = this.buildSignMessage(address, nonce);
+      console.log('[UserManager] Challenge message generated');
 
-    const message = this.buildSignMessage(eoaAddress, nonce);
-
-    return {
-      nonce,
-      message,
-      expiresAt,
-    };
+      return {
+        nonce,
+        message,
+        expiresAt,
+      };
+    } catch (err: any) {
+      console.error('[UserManager] Failed to store nonce:', err.message || err);
+      // If the table doesn't exist, provide helpful error
+      if (err.message?.includes('relation "user_nonces" does not exist')) {
+        throw new Error('Database migration 005_multi_user_trading.sql has not been applied. Please run the migration.');
+      }
+      throw err;
+    }
   }
 
   /**
@@ -117,24 +134,50 @@ This signature does not trigger any blockchain transaction or cost any gas.`;
     userAgent?: string
   ): Promise<UserSession | null> {
     const address = eoaAddress.toLowerCase();
+    console.log('[UserManager] Authenticating', address);
 
     // Get stored nonce
-    const nonceResult = await this.db.query(`
-      SELECT nonce, expires_at FROM user_nonces
-      WHERE eoa_address = $1 AND expires_at > NOW()
-    `, [address]);
-
-    if (nonceResult.rows.length === 0) {
-      console.log('[UserManager] No valid nonce found for', address);
-      console.log('[UserManager] This could mean: nonce expired, never requested, or already used');
+    let nonceResult;
+    try {
+      nonceResult = await this.db.query(`
+        SELECT nonce, expires_at FROM user_nonces
+        WHERE eoa_address = $1 AND expires_at > NOW()
+      `, [address]);
+    } catch (err: any) {
+      console.error('[UserManager] Failed to query nonce:', err.message || err);
+      if (err.message?.includes('relation "user_nonces" does not exist')) {
+        console.error('[UserManager] Database migration 005_multi_user_trading.sql has not been applied!');
+      }
       return null;
     }
 
-    const { nonce } = nonceResult.rows[0];
-    const message = this.buildSignMessage(eoaAddress, nonce);
+    if (nonceResult.rows.length === 0) {
+      console.log('[UserManager] No valid nonce found for', address);
+      // Check if there's an expired nonce
+      const expiredCheck = await this.db.query(`
+        SELECT nonce, expires_at, created_at FROM user_nonces WHERE eoa_address = $1
+      `, [address]);
+      if (expiredCheck.rows.length > 0) {
+        const row = expiredCheck.rows[0];
+        console.log('[UserManager] Found expired/used nonce:', {
+          createdAt: row.created_at,
+          expiresAt: row.expires_at,
+          now: new Date(),
+          isExpired: new Date(row.expires_at) < new Date()
+        });
+      } else {
+        console.log('[UserManager] No nonce ever requested for this address. Did /api/auth/challenge fail?');
+      }
+      return null;
+    }
+
+    const { nonce, expires_at } = nonceResult.rows[0];
+    console.log('[UserManager] Found valid nonce, expires at', expires_at);
+    
+    const message = this.buildSignMessage(address, nonce);
     
     console.log('[UserManager] Verifying signature for', address);
-    console.log('[UserManager] Expected message:', message);
+    console.log('[UserManager] Expected message:', message.slice(0, 100) + '...');
 
     // Verify signature
     try {

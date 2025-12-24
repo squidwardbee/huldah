@@ -1,9 +1,11 @@
+import { useEffect } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { getOrderbook } from '../../lib/tradingApi';
 
 interface OrderbookProps {
   tokenId: string;
   onPriceClick?: (price: number) => void;
+  onBestPricesChange?: (bestBid: number | undefined, bestAsk: number | undefined) => void;
 }
 
 interface OrderLevel {
@@ -11,13 +13,22 @@ interface OrderLevel {
   size: string;
 }
 
-export function Orderbook({ tokenId, onPriceClick }: OrderbookProps) {
+export function Orderbook({ tokenId, onPriceClick, onBestPricesChange }: OrderbookProps) {
   const { data, isLoading, error } = useQuery({
     queryKey: ['orderbook', tokenId],
     queryFn: () => getOrderbook(tokenId),
     refetchInterval: 2000,
     enabled: !!tokenId,
   });
+
+  // Notify parent of best bid/ask changes
+  useEffect(() => {
+    if (data && onBestPricesChange) {
+      const bestBid = data.bids?.[0] ? parseFloat(data.bids[0].price) : undefined;
+      const bestAsk = data.asks?.[0] ? parseFloat(data.asks[0].price) : undefined;
+      onBestPricesChange(bestBid, bestAsk);
+    }
+  }, [data, onBestPricesChange]);
 
   if (!tokenId) {
     return (
