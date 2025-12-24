@@ -5,8 +5,37 @@ import { createServer } from 'http';
 import { Pool } from 'pg';
 import Redis from 'ioredis';
 import cors from 'cors';
+import axios from 'axios';
 import { TradePoller } from './services/tradePoller.js';
 import { WalletScorer } from './services/walletScorer.js';
+import { SubgraphService } from './services/subgraphService.js';
+import { SubgraphClient } from './services/polymarket/subgraphClient.js';
+import { InsiderDetector } from './services/insiderDetector.js';
+import { MarketSyncService } from './services/marketSync.js';
+import { InsiderPredictor, TrainingExporter } from './services/ml/index.js';
+import { 
+  OrderExecutor, 
+  createOrderExecutorFromEnv,
+  UserManager,
+  createUserManagerFromEnv,
+  MultiUserExecutor,
+  createMultiUserExecutorFromEnv,
+} from './services/trading/index.js';
+import { OrderRequest } from './types/trading.js';
+import { Request, Response, NextFunction } from 'express';
+
+// Extend Express Request to include user
+declare global {
+  namespace Express {
+    interface Request {
+      user?: {
+        id: number;
+        eoaAddress: string;
+        proxyAddress: string | null;
+      };
+    }
+  }
+}
 
 const app = express();
 app.use(cors());
@@ -29,6 +58,57 @@ const redisSub = new Redis({ host: REDIS_HOST, port: 6379 });
 
 // Services
 const walletScorer = new WalletScorer(db);
+const subgraphService = new SubgraphService(db);
+const subgraphClient = new SubgraphClient();
+const insiderDetector = new InsiderDetector(db);
+const marketSync = new MarketSyncService(db);
+const insiderPredictor = new InsiderPredictor(db);
+const trainingExporter = new TrainingExporter(db);
+
+// Trading executor (initialized lazily on first trade)
+let orderExecutor: OrderExecutor | null = null;
+const getOrderExecutor = async (): Promise<OrderExecutor> => {
+  if (!orderExecutor) {
+    orderExecutor = createOrderExecutorFromEnv(db, redis);
+    await orderExecutor.initialize();
+  }
+  return orderExecutor;
+};
+
+// Multi-user trading services
+const userManager = createUserManagerFromEnv(db);
+let multiUserExecutor: MultiUserExecutor | null = null;
+const getMultiUserExecutor = async (): Promise<MultiUserExecutor> => {
+  if (!multiUserExecutor) {
+    multiUserExecutor = createMultiUserExecutorFromEnv(db, redis, userManager);
+    await multiUserExecutor.initialize();
+  }
+  return multiUserExecutor;
+};
+
+// Auth middleware - validates session token
+const authMiddleware = async (req: Request, res: Response, next: NextFunction) => {
+  const authHeader = req.headers.authorization;
+  
+  if (!authHeader || !authHeader.startsWith('Bearer ')) {
+    return res.status(401).json({ error: 'Missing or invalid authorization header' });
+  }
+  
+  const token = authHeader.substring(7);
+  const user = await userManager.validateSession(token);
+  
+  if (!user) {
+    return res.status(401).json({ error: 'Invalid or expired session' });
+  }
+  
+  req.user = {
+    id: user.id,
+    eoaAddress: user.eoaAddress,
+    proxyAddress: user.proxyAddress,
+  };
+  
+  next();
+};
 
 // Routes
 app.get('/api/whales', async (req, res) => {
@@ -44,26 +124,13 @@ app.get('/api/whales', async (req, res) => {
 });
 
 app.get('/api/wallets/top', async (_req, res) => {
-  const { rows } = await db.query(`
-    SELECT 
-      address, 
-      total_trades, 
-      total_volume, 
-      win_count, 
-      loss_count, 
-      realized_pnl,
-      tags,
-      insider_score,
-      smart_money_score,
-      CASE WHEN (win_count + loss_count) > 0 
-           THEN win_count::float / (win_count + loss_count) 
-           ELSE 0 END as win_rate
-    FROM wallets
-    ORDER BY total_volume DESC
-    LIMIT 50
-  `);
-  
-  res.json(rows);
+  try {
+    const wallets = await subgraphService.getTopWallets(50);
+    res.json(wallets);
+  } catch (err) {
+    console.error('Error fetching top wallets:', err);
+    res.status(500).json({ error: 'Failed to fetch top wallets' });
+  }
 });
 
 app.get('/api/wallets/tagged/:tag', async (req, res) => {
@@ -135,6 +202,635 @@ app.post('/api/wallets/recompute-tags', async (_req, res) => {
   res.json({ message: 'Tag recomputation started' });
 });
 
+// Seed top wallets from Polymarket subgraph
+app.post('/api/wallets/seed', async (_req, res) => {
+  try {
+    const count = await subgraphService.seedTopWallets();
+    res.json({ message: `Seeded ${count} wallets from subgraph` });
+  } catch (err) {
+    console.error('Error seeding wallets:', err);
+    res.status(500).json({ error: 'Failed to seed wallets' });
+  }
+});
+
+// ============ INSIDER DETECTION ENDPOINTS ============
+
+// Get potential insider wallets
+app.get('/api/insiders', async (req, res) => {
+  try {
+    const limit = Math.min(parseInt(req.query.limit as string) || 50, 100);
+    const insiders = await insiderDetector.getTopInsiders(limit);
+    res.json(insiders);
+  } catch (err) {
+    console.error('Error fetching insiders:', err);
+    res.status(500).json({ error: 'Failed to fetch insiders' });
+  }
+});
+
+// Get insider alerts
+app.get('/api/insiders/alerts', async (req, res) => {
+  try {
+    const limit = Math.min(parseInt(req.query.limit as string) || 20, 100);
+    const alerts = await insiderDetector.getRecentAlerts(limit);
+    res.json(alerts);
+  } catch (err) {
+    console.error('Error fetching insider alerts:', err);
+    res.status(500).json({ error: 'Failed to fetch insider alerts' });
+  }
+});
+
+// Analyze a specific market for insider activity
+app.get('/api/insiders/market/:conditionId', async (req, res) => {
+  try {
+    const { conditionId } = req.params;
+    const analysis = await insiderDetector.analyzeMarket(conditionId);
+    res.json(analysis);
+  } catch (err) {
+    console.error('Error analyzing market:', err);
+    res.status(500).json({ error: 'Failed to analyze market' });
+  }
+});
+
+// Manually trigger insider score recomputation
+app.post('/api/insiders/recompute', async (_req, res) => {
+  try {
+    await insiderDetector.computeAllInsiderScores();
+    res.json({ message: 'Insider score recomputation complete' });
+  } catch (err) {
+    console.error('Error recomputing insider scores:', err);
+    res.status(500).json({ error: 'Failed to recompute insider scores' });
+  }
+});
+
+// ============ MARKET SYNC ENDPOINTS ============
+
+// Get market sync stats
+app.get('/api/markets/stats', async (_req, res) => {
+  try {
+    const stats = await marketSync.getStats();
+    res.json(stats);
+  } catch (err) {
+    console.error('Error fetching market stats:', err);
+    res.status(500).json({ error: 'Failed to fetch market stats' });
+  }
+});
+
+// Get markets list
+app.get('/api/markets', async (req, res) => {
+  try {
+    const limit = Math.min(parseInt(req.query.limit as string) || 50, 200);
+    const resolved = req.query.resolved === 'true';
+    
+    const { rows } = await db.query(`
+      SELECT 
+        condition_id,
+        question,
+        slug,
+        COALESCE(last_price_yes, 0.5) as outcome_yes_price,
+        COALESCE(last_price_no, 0.5) as outcome_no_price,
+        volume,
+        liquidity,
+        COALESCE(resolved, false) as resolved,
+        resolution_outcome,
+        end_date,
+        metadata,
+        yes_token_id,
+        no_token_id
+      FROM markets
+      WHERE ($1::boolean IS NULL OR resolved = $1)
+        AND question IS NOT NULL
+      ORDER BY 
+        CASE WHEN resolved = false OR resolved IS NULL THEN 0 ELSE 1 END,
+        volume DESC NULLS LAST
+      LIMIT $2
+    `, [resolved || null, limit]);
+    
+    res.json(rows);
+  } catch (err) {
+    console.error('Error fetching markets:', err);
+    res.status(500).json({ error: 'Failed to fetch markets' });
+  }
+});
+
+// Get market holders - DISABLED (subgraph doesn't support this query)
+app.get('/api/markets/:conditionId/holders', async (_req, res) => {
+  // The positions subgraph doesn't have a 'positions' root query
+  // Return empty array until we find a working data source
+  res.json([]);
+});
+
+// Trigger manual market sync
+app.post('/api/markets/sync', async (_req, res) => {
+  try {
+    await marketSync.fullSync();
+    const stats = await marketSync.getStats();
+    res.json({ message: 'Market sync complete', stats });
+  } catch (err) {
+    console.error('Error syncing markets:', err);
+    res.status(500).json({ error: 'Failed to sync markets' });
+  }
+});
+
+// ============ ML PREDICTION ENDPOINTS ============
+
+// Predict insider probability for a trade
+app.post('/api/ml/predict/trade', async (req, res) => {
+  try {
+    const { wallet_address, condition_id, price, size_usd, side } = req.body;
+    
+    if (!wallet_address || !condition_id || price === undefined || !size_usd || !side) {
+      return res.status(400).json({ 
+        error: 'Missing required fields: wallet_address, condition_id, price, size_usd, side' 
+      });
+    }
+    
+    const prediction = await insiderPredictor.predictTrade(
+      wallet_address,
+      condition_id,
+      parseFloat(price),
+      parseFloat(size_usd),
+      side.toUpperCase() as 'BUY' | 'SELL'
+    );
+    
+    res.json(prediction);
+  } catch (err) {
+    console.error('Error predicting trade:', err);
+    res.status(500).json({ error: 'Failed to predict trade' });
+  }
+});
+
+// Get ML predictions for top wallets
+app.get('/api/ml/predict/wallets', async (req, res) => {
+  try {
+    const limit = Math.min(parseInt(req.query.limit as string) || 50, 100);
+    const predictions = await insiderPredictor.predictWallets(limit);
+    res.json(predictions);
+  } catch (err) {
+    console.error('Error predicting wallets:', err);
+    res.status(500).json({ error: 'Failed to predict wallets' });
+  }
+});
+
+// Export training data to CSV
+app.post('/api/ml/export', async (req, res) => {
+  try {
+    const outputDir = './data';
+    const { mkdirSync } = await import('fs');
+    
+    try { mkdirSync(outputDir, { recursive: true }); } catch {}
+    
+    const [tradesCount, walletsCount] = await Promise.all([
+      trainingExporter.exportTradeFeatures(`${outputDir}/trades.csv`),
+      trainingExporter.exportWalletFeatures(`${outputDir}/wallets.csv`)
+    ]);
+    
+    res.json({ 
+      message: 'Training data exported',
+      trades: tradesCount,
+      wallets: walletsCount,
+      files: [`${outputDir}/trades.csv`, `${outputDir}/wallets.csv`]
+    });
+  } catch (err) {
+    console.error('Error exporting training data:', err);
+    res.status(500).json({ error: 'Failed to export training data' });
+  }
+});
+
+// Get training data statistics
+app.get('/api/ml/stats', async (_req, res) => {
+  try {
+    const stats = await trainingExporter.getTrainingStats();
+    const modelLoaded = insiderPredictor.isModelLoaded();
+    
+    res.json({
+      ...stats,
+      modelLoaded,
+      modelType: modelLoaded ? 'xgboost' : 'rule-based'
+    });
+  } catch (err) {
+    console.error('Error getting ML stats:', err);
+    res.status(500).json({ error: 'Failed to get ML stats' });
+  }
+});
+
+// ============ TRADING ENDPOINTS ============
+
+// Get trading status
+app.get('/api/trading/status', async (_req, res) => {
+  try {
+    const executor = await getOrderExecutor();
+    const status = await executor.getStatus();
+    res.json(status);
+  } catch (err) {
+    console.error('Error getting trading status:', err);
+    res.status(500).json({ error: 'Failed to get trading status' });
+  }
+});
+
+// Place an order
+app.post('/api/trading/order', async (req, res) => {
+  try {
+    const { tokenId, side, price, size, orderType, tickSize, negRisk } = req.body;
+    
+    // Validate required fields
+    if (!tokenId || !side || price === undefined || !size) {
+      return res.status(400).json({
+        error: 'Missing required fields: tokenId, side, price, size'
+      });
+    }
+    
+    // Validate price range
+    if (price < 0.01 || price > 0.99) {
+      return res.status(400).json({
+        error: 'Price must be between 0.01 and 0.99'
+      });
+    }
+    
+    // Validate side
+    if (!['BUY', 'SELL'].includes(side.toUpperCase())) {
+      return res.status(400).json({
+        error: 'Side must be BUY or SELL'
+      });
+    }
+    
+    const orderRequest: OrderRequest = {
+      tokenId,
+      side: side.toUpperCase() as 'BUY' | 'SELL',
+      price: parseFloat(price),
+      size: parseFloat(size),
+      orderType: orderType || 'GTC',
+      tickSize: tickSize || '0.01',
+      negRisk: negRisk || false,
+    };
+    
+    const executor = await getOrderExecutor();
+    const response = await executor.executeOrder(orderRequest);
+    
+    res.json(response);
+  } catch (err) {
+    console.error('Error placing order:', err);
+    res.status(500).json({ error: 'Failed to place order' });
+  }
+});
+
+// Cancel an order
+app.delete('/api/trading/order/:orderId', async (req, res) => {
+  try {
+    const { orderId } = req.params;
+    const executor = await getOrderExecutor();
+    const success = await executor.cancelOrder(orderId);
+    
+    res.json({ success, orderId });
+  } catch (err) {
+    console.error('Error cancelling order:', err);
+    res.status(500).json({ error: 'Failed to cancel order' });
+  }
+});
+
+// Get open orders
+app.get('/api/trading/orders', async (_req, res) => {
+  try {
+    const executor = await getOrderExecutor();
+    const orders = await executor.getOpenOrders();
+    res.json(orders);
+  } catch (err) {
+    console.error('Error fetching orders:', err);
+    res.status(500).json({ error: 'Failed to fetch orders' });
+  }
+});
+
+// Get trade history
+app.get('/api/trading/history', async (_req, res) => {
+  try {
+    const executor = await getOrderExecutor();
+    const trades = await executor.getTradeHistory();
+    res.json(trades);
+  } catch (err) {
+    console.error('Error fetching trade history:', err);
+    res.status(500).json({ error: 'Failed to fetch trade history' });
+  }
+});
+
+// Get orderbook for a token (public - no auth required)
+app.get('/api/trading/orderbook/:tokenId', async (req, res) => {
+  try {
+    const { tokenId } = req.params;
+    
+    if (!tokenId || tokenId === 'undefined' || tokenId === 'null') {
+      return res.json({ bids: [], asks: [], market: null });
+    }
+    
+    // Fetch directly from Polymarket CLOB API (public endpoint)
+    const response = await axios.get(`https://clob.polymarket.com/book`, {
+      params: { token_id: tokenId },
+      timeout: 8000,
+    });
+    
+    res.json(response.data);
+  } catch (err: any) {
+    // Log but don't spam console for common 404s
+    if (err.response?.status !== 404) {
+      console.error('Error fetching orderbook:', err.message || err);
+    }
+    // Return empty orderbook instead of error to prevent frontend crashes
+    res.json({ bids: [], asks: [], market: null });
+  }
+});
+
+// Get market info (public - no auth required)
+app.get('/api/trading/market/:tokenId', async (req, res) => {
+  try {
+    const { tokenId } = req.params;
+    
+    if (!tokenId || tokenId === 'undefined' || tokenId === 'null') {
+      return res.status(400).json({ error: 'Invalid token ID' });
+    }
+    
+    // Fetch from Polymarket CLOB API (public endpoint)
+    const response = await axios.get(`https://clob.polymarket.com/markets/${tokenId}`, {
+      timeout: 8000,
+    });
+    
+    if (!response.data) {
+      return res.status(404).json({ error: 'Market not found' });
+    }
+    
+    res.json(response.data);
+  } catch (err: any) {
+    if (err.response?.status === 404) {
+      return res.status(404).json({ error: 'Market not found' });
+    }
+    console.error('Error fetching market:', err.message || err);
+    res.status(500).json({ error: 'Failed to fetch market' });
+  }
+});
+
+// Get order history from database
+app.get('/api/trading/orders/history', async (req, res) => {
+  try {
+    const limit = Math.min(parseInt(req.query.limit as string) || 50, 200);
+    
+    const { rows } = await db.query(`
+      SELECT 
+        order_id,
+        token_id,
+        side,
+        price,
+        size,
+        status,
+        execution_path,
+        transaction_hash,
+        error_message,
+        filled_size,
+        avg_fill_price,
+        retry_count,
+        created_at,
+        completed_at
+      FROM trading_orders
+      ORDER BY created_at DESC
+      LIMIT $1
+    `, [limit]);
+    
+    res.json(rows);
+  } catch (err) {
+    console.error('Error fetching order history:', err);
+    res.status(500).json({ error: 'Failed to fetch order history' });
+  }
+});
+
+// Get trading statistics
+app.get('/api/trading/stats', async (_req, res) => {
+  try {
+    const [totals, daily, executor] = await Promise.all([
+      db.query(`
+        SELECT 
+          COUNT(*) as total_orders,
+          COUNT(*) FILTER (WHERE status = 'CONFIRMED') as filled_orders,
+          COUNT(*) FILTER (WHERE status = 'FAILED') as failed_orders,
+          COALESCE(SUM(size * price), 0) as total_volume,
+          COALESCE(SUM(filled_size * avg_fill_price) FILTER (WHERE status = 'CONFIRMED'), 0) as filled_volume
+        FROM trading_orders
+      `),
+      db.query(`
+        SELECT 
+          date,
+          orders_placed,
+          orders_filled,
+          orders_failed,
+          total_volume,
+          realized_pnl
+        FROM trading_stats
+        ORDER BY date DESC
+        LIMIT 7
+      `),
+      getOrderExecutor().then(e => e.getStatus()),
+    ]);
+    
+    res.json({
+      totals: totals.rows[0],
+      daily: daily.rows,
+      executor,
+    });
+  } catch (err) {
+    console.error('Error fetching trading stats:', err);
+    res.status(500).json({ error: 'Failed to fetch trading stats' });
+  }
+});
+
+// ============ MULTI-USER TRADING ENDPOINTS ============
+
+// Get authentication challenge (nonce to sign)
+app.post('/api/auth/challenge', async (req, res) => {
+  try {
+    const { address } = req.body;
+    
+    if (!address) {
+      return res.status(400).json({ error: 'Address is required' });
+    }
+    
+    const challenge = await userManager.generateAuthChallenge(address);
+    res.json(challenge);
+  } catch (err) {
+    console.error('Error generating auth challenge:', err);
+    res.status(500).json({ error: 'Failed to generate challenge' });
+  }
+});
+
+// Authenticate with signed message
+app.post('/api/auth/login', async (req, res) => {
+  try {
+    const { address, signature } = req.body;
+    
+    if (!address || !signature) {
+      return res.status(400).json({ error: 'Address and signature are required' });
+    }
+    
+    const ipAddress = req.ip || req.socket.remoteAddress;
+    const userAgent = req.headers['user-agent'];
+    
+    const session = await userManager.authenticateWithSignature(
+      address,
+      signature,
+      ipAddress,
+      userAgent
+    );
+    
+    if (!session) {
+      return res.status(401).json({ error: 'Authentication failed' });
+    }
+    
+    res.json(session);
+  } catch (err) {
+    console.error('Error authenticating:', err);
+    res.status(500).json({ error: 'Failed to authenticate' });
+  }
+});
+
+// Logout (invalidate session)
+app.post('/api/auth/logout', authMiddleware, async (req, res) => {
+  try {
+    const token = req.headers.authorization?.substring(7);
+    if (token) {
+      await userManager.invalidateSession(token);
+    }
+    res.json({ success: true });
+  } catch (err) {
+    console.error('Error logging out:', err);
+    res.status(500).json({ error: 'Failed to logout' });
+  }
+});
+
+// Get current user profile
+app.get('/api/user/me', authMiddleware, async (req, res) => {
+  try {
+    const user = await userManager.getUserById(req.user!.id);
+    if (!user) {
+      return res.status(404).json({ error: 'User not found' });
+    }
+    res.json(user);
+  } catch (err) {
+    console.error('Error fetching user:', err);
+    res.status(500).json({ error: 'Failed to fetch user' });
+  }
+});
+
+// Get user's positions
+app.get('/api/user/positions', authMiddleware, async (req, res) => {
+  try {
+    const positions = await userManager.getUserPositions(req.user!.id);
+    res.json(positions);
+  } catch (err) {
+    console.error('Error fetching positions:', err);
+    res.status(500).json({ error: 'Failed to fetch positions' });
+  }
+});
+
+// Get user's order history
+app.get('/api/user/orders', authMiddleware, async (req, res) => {
+  try {
+    const limit = Math.min(parseInt(req.query.limit as string) || 50, 200);
+    const orders = await userManager.getUserOrders(req.user!.id, limit);
+    res.json(orders);
+  } catch (err) {
+    console.error('Error fetching user orders:', err);
+    res.status(500).json({ error: 'Failed to fetch orders' });
+  }
+});
+
+// Get user's rate limit status
+app.get('/api/user/rate-limit', authMiddleware, async (req, res) => {
+  try {
+    const executor = await getMultiUserExecutor();
+    const rateLimit = await executor.getUserRateLimitStatus(req.user!.id);
+    res.json(rateLimit);
+  } catch (err) {
+    console.error('Error fetching rate limit:', err);
+    res.status(500).json({ error: 'Failed to fetch rate limit' });
+  }
+});
+
+// Place order (authenticated user)
+app.post('/api/user/order', authMiddleware, async (req, res) => {
+  try {
+    const { tokenId, side, price, size, orderType, tickSize, negRisk } = req.body;
+    
+    if (!tokenId || !side || price === undefined || !size) {
+      return res.status(400).json({
+        error: 'Missing required fields: tokenId, side, price, size'
+      });
+    }
+    
+    if (price < 0.01 || price > 0.99) {
+      return res.status(400).json({ error: 'Price must be between 0.01 and 0.99' });
+    }
+    
+    if (!['BUY', 'SELL'].includes(side.toUpperCase())) {
+      return res.status(400).json({ error: 'Side must be BUY or SELL' });
+    }
+    
+    const executor = await getMultiUserExecutor();
+    const response = await executor.executeOrder({
+      userId: req.user!.id,
+      tokenId,
+      side: side.toUpperCase() as 'BUY' | 'SELL',
+      price: parseFloat(price),
+      size: parseFloat(size),
+      orderType: orderType || 'GTC',
+      tickSize: tickSize || '0.01',
+      negRisk: negRisk || false,
+    });
+    
+    res.json(response);
+  } catch (err) {
+    console.error('Error placing user order:', err);
+    res.status(500).json({ error: 'Failed to place order' });
+  }
+});
+
+// ============ PLATFORM ADMIN ENDPOINTS ============
+
+// Get platform stats
+app.get('/api/platform/stats', async (_req, res) => {
+  try {
+    // Get user stats (may fail if tables don't exist)
+    let userStats = { totalUsers: 0, activeUsers24h: 0, totalVolume: 0, totalOrders: 0 };
+    try {
+      userStats = await userManager.getPlatformStats();
+    } catch (e) {
+      console.warn('[Platform] User stats table not ready');
+    }
+    
+    // Get executor status (may fail if not initialized)
+    let executorStatus = { initialized: false, platformRateLimit: null, activeUsers: 0 };
+    try {
+      const executor = await getMultiUserExecutor();
+      executorStatus = await executor.getStatus();
+    } catch (e) {
+      console.warn('[Platform] Executor not ready');
+    }
+    
+    res.json({
+      users: userStats,
+      executor: executorStatus,
+    });
+  } catch (err) {
+    console.error('Error fetching platform stats:', err);
+    res.status(500).json({ error: 'Failed to fetch platform stats' });
+  }
+});
+
+// Get all users (admin)
+app.get('/api/platform/users', async (req, res) => {
+  try {
+    const limit = Math.min(parseInt(req.query.limit as string) || 100, 500);
+    const users = await userManager.getAllUsers(limit);
+    res.json(users);
+  } catch (err) {
+    console.error('Error fetching users:', err);
+    res.status(500).json({ error: 'Failed to fetch users' });
+  }
+});
+
 // HTTP + WebSocket server
 const server = createServer(app);
 const wss = new WebSocketServer({ server, path: '/ws' });
@@ -170,9 +866,20 @@ const PORT = parseInt(process.env.PORT || '3001');
 server.listen(PORT, async () => {
   console.log(`[Server] Running on http://localhost:${PORT}`);
   
+  // Seed top wallets from Polymarket subgraph on startup
+  console.log('[Server] Seeding top wallets from Polymarket subgraph...');
+  await subgraphService.seedTopWallets();
+  
+  // Start market sync first (needed for insider detection)
+  console.log('[Server] Starting market sync...');
+  marketSync.startScheduled(15 * 60 * 1000);  // Every 15 minutes
+  
   // Start trade polling
   await poller.start();
   
   // Start wallet scoring (runs every 5 minutes)
   walletScorer.startScheduled(5 * 60 * 1000);
+  
+  // Start insider detection (runs every 10 minutes)
+  insiderDetector.startScheduled(10 * 60 * 1000);
 });

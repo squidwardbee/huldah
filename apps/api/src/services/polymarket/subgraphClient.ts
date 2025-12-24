@@ -68,6 +68,40 @@ export class SubgraphClient {
     
     return result.users;
   }
+
+  /**
+   * Get top holders for a specific market condition
+   */
+  async getMarketHolders(conditionId: string, first = 50): Promise<{
+    user: string;
+    outcomeIndex: number;
+    balance: string;
+    averagePrice: string;
+  }[]> {
+    const query = `
+      query MarketHolders($condition: String!, $first: Int!) {
+        positions(
+          where: { condition: $condition, balance_gt: "0" }
+          orderBy: balance
+          orderDirection: desc
+          first: $first
+        ) {
+          user
+          outcomeIndex
+          balance
+          averagePrice
+        }
+      }
+    `;
+    
+    const result = await this.query<{ positions: { user: string; outcomeIndex: number; balance: string; averagePrice: string }[] }>(
+      ENDPOINTS.positions,
+      query,
+      { condition: conditionId, first }
+    );
+    
+    return result.positions;
+  }
 }
 
 

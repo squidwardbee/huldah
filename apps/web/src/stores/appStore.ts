@@ -22,6 +22,7 @@ export interface Wallet {
   win_rate: number;
   win_count: number;
   loss_count: number;
+  realized_pnl?: number;
   tags?: string[];
   insider_score?: number;
   smart_money_score?: number;

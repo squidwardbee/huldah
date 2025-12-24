@@ -2,14 +2,14 @@ import { useQuery } from '@tanstack/react-query';
 import { getTopWallets } from '../lib/api';
 import type { Wallet } from '../stores/appStore';
 
-function formatVolume(volume: number): string {
-  if (volume >= 1000000) {
-    return `$${(volume / 1000000).toFixed(1)}M`;
+function formatAmount(amount: number): string {
+  if (Math.abs(amount) >= 1000000) {
+    return `$${(amount / 1000000).toFixed(1)}M`;
   }
-  if (volume >= 1000) {
-    return `$${(volume / 1000).toFixed(1)}K`;
+  if (Math.abs(amount) >= 1000) {
+    return `$${(amount / 1000).toFixed(1)}K`;
   }
-  return `$${volume.toFixed(0)}`;
+  return `$${amount.toFixed(0)}`;
 }
 
 function formatAddress(address: string): string {
@@ -22,6 +22,7 @@ const TAG_EMOJI: Record<string, string> = {
   insider: '👁',
   active: '⚡',
   new: '✨',
+  top_trader: '💰',
 };
 
 export function TopWallets() {
@@ -62,8 +63,8 @@ export function TopWallets() {
                 <th className="px-4 py-3 text-left font-medium">#</th>
                 <th className="px-4 py-3 text-left font-medium">Wallet</th>
                 <th className="px-4 py-3 text-center font-medium">Tags</th>
+                <th className="px-4 py-3 text-right font-medium">Best PnL</th>
                 <th className="px-4 py-3 text-right font-medium">Volume</th>
-                <th className="px-4 py-3 text-right font-medium">Win%</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-terminal-border/30">
@@ -104,22 +105,18 @@ export function TopWallets() {
                     </div>
                   </td>
                   <td className="px-4 py-3 text-right">
-                    <span className="text-white font-mono text-sm font-semibold">
-                      {formatVolume(Number(wallet.total_volume))}
+                    <span className={`font-mono text-sm font-semibold ${
+                      Number(wallet.realized_pnl) > 0 ? 'text-neon-green' : 'text-terminal-muted'
+                    }`}>
+                      {wallet.realized_pnl && Number(wallet.realized_pnl) > 0 
+                        ? formatAmount(Number(wallet.realized_pnl)) 
+                        : '—'}
                     </span>
                   </td>
                   <td className="px-4 py-3 text-right">
-                    <span className={`font-mono text-sm font-medium ${
-                      wallet.win_rate > 0.6 
-                        ? 'text-neon-green' 
-                        : wallet.win_rate > 0.4
-                          ? 'text-neon-amber'
-                          : wallet.win_rate > 0 
-                            ? 'text-neon-red' 
-                            : 'text-terminal-muted'
-                    }`}>
-                      {wallet.win_rate > 0 
-                        ? `${(wallet.win_rate * 100).toFixed(0)}%` 
+                    <span className="font-mono text-sm text-white">
+                      {wallet.total_volume && Number(wallet.total_volume) > 0 
+                        ? formatAmount(Number(wallet.total_volume)) 
                         : '—'}
                     </span>
                   </td>

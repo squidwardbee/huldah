@@ -8,12 +8,17 @@
     "start": "node dist/index.js"
   },
   "dependencies": {
+    "@ethersproject/wallet": "^5.7.0",
+    "@polymarket/builder-relayer-client": "^0.0.8",
+    "@polymarket/builder-signing-sdk": "^0.0.8",
+    "@polymarket/clob-client": "^5.1.2",
     "axios": "^1.6.0",
     "cors": "^2.8.5",
     "dotenv": "^16.3.1",
     "express": "^4.18.2",
     "ioredis": "^5.3.2",
     "pg": "^8.11.3",
+    "viem": "^2.21.0",
     "ws": "^8.14.2",
     "zod": "^3.22.4"
   },
@@ -27,5 +32,3 @@
     "typescript": "^5.3.2"
   }
 }
-
-
