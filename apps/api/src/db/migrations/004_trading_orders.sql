@@ -109,3 +109,4 @@ CREATE TABLE IF NOT EXISTS trading_stats (
 
 CREATE UNIQUE INDEX IF NOT EXISTS idx_trading_stats_date ON trading_stats(date);
 
+

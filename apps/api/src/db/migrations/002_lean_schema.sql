@@ -31,3 +31,4 @@ CREATE INDEX IF NOT EXISTS idx_whale_trades_wallet ON whale_trades(wallet_addres
 CREATE INDEX IF NOT EXISTS idx_wallets_insider ON wallets(insider_score DESC);
 CREATE INDEX IF NOT EXISTS idx_wallets_smart ON wallets(smart_money_score DESC);
 
+

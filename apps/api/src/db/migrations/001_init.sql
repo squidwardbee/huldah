@@ -46,3 +46,4 @@ CREATE INDEX IF NOT EXISTS idx_trades_whale ON trades(is_whale) WHERE is_whale =
 CREATE INDEX IF NOT EXISTS idx_wallets_volume ON wallets(total_volume DESC);
 
 
+

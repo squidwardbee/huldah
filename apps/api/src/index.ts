@@ -6,6 +6,12 @@ import { Pool } from 'pg';
 import Redis from 'ioredis';
 import cors from 'cors';
 import axios from 'axios';
+
+// Simple axios instance for Polymarket CLOB API
+const clobClient = axios.create({
+  baseURL: 'https://clob.polymarket.com',
+  timeout: 8000,
+});
 import { TradePoller } from './services/tradePoller.js';
 import { WalletScorer } from './services/walletScorer.js';
 import { SubgraphService } from './services/subgraphService.js';
@@ -13,13 +19,15 @@ import { SubgraphClient } from './services/polymarket/subgraphClient.js';
 import { InsiderDetector } from './services/insiderDetector.js';
 import { MarketSyncService } from './services/marketSync.js';
 import { InsiderPredictor, TrainingExporter } from './services/ml/index.js';
-import { 
-  OrderExecutor, 
+import {
+  OrderExecutor,
   createOrderExecutorFromEnv,
   UserManager,
   createUserManagerFromEnv,
   MultiUserExecutor,
   createMultiUserExecutorFromEnv,
+  CredentialStore,
+  createCredentialStore,
 } from './services/trading/index.js';
 import { OrderRequest } from './types/trading.js';
 import { Request, Response, NextFunction } from 'express';
@@ -77,6 +85,7 @@ const getOrderExecutor = async (): Promise<OrderExecutor> => {
 
 // Multi-user trading services
 const userManager = createUserManagerFromEnv(db);
+const credentialStore = createCredentialStore(db);
 let multiUserExecutor: MultiUserExecutor | null = null;
 const getMultiUserExecutor = async (): Promise<MultiUserExecutor> => {
   if (!multiUserExecutor) {
@@ -532,9 +541,8 @@ app.get('/api/trading/orderbook/:tokenId', async (req, res) => {
     }
     
     // Fetch directly from Polymarket CLOB API (public endpoint)
-    const response = await axios.get(`https://clob.polymarket.com/book`, {
+    const response = await clobClient.get('/book', {
       params: { token_id: tokenId },
-      timeout: 8000,
     });
     
     res.json(response.data);
@@ -558,9 +566,7 @@ app.get('/api/trading/market/:tokenId', async (req, res) => {
     }
     
     // Fetch from Polymarket CLOB API (public endpoint)
-    const response = await axios.get(`https://clob.polymarket.com/markets/${tokenId}`, {
-      timeout: 8000,
-    });
+    const response = await clobClient.get(`/markets/${tokenId}`);
     
     if (!response.data) {
       return res.status(404).json({ error: 'Market not found' });
@@ -790,37 +796,131 @@ app.get('/api/user/rate-limit', authMiddleware, async (req, res) => {
   }
 });
 
+// ============ TRADING CREDENTIALS ENDPOINTS ============
+
+// Check if user has registered CLOB credentials
+app.get('/api/user/credentials/status', authMiddleware, async (req, res) => {
+  try {
+    const hasCredentials = await credentialStore.hasCredentials(req.user!.id);
+    const isConfigured = credentialStore.isConfigured();
+
+    res.json({
+      hasCredentials,
+      encryptionConfigured: isConfigured,
+      canTrade: hasCredentials && isConfigured,
+    });
+  } catch (err) {
+    console.error('Error checking credentials:', err);
+    res.status(500).json({ error: 'Failed to check credentials status' });
+  }
+});
+
+// Register CLOB API credentials
+app.post('/api/user/credentials', authMiddleware, async (req, res) => {
+  try {
+    const { apiKey, apiSecret, apiPassphrase } = req.body;
+
+    // Validate input
+    if (!apiKey || !apiSecret || !apiPassphrase) {
+      return res.status(400).json({
+        error: 'Missing required fields: apiKey, apiSecret, apiPassphrase'
+      });
+    }
+
+    // Check if encryption is configured
+    if (!credentialStore.isConfigured()) {
+      return res.status(503).json({
+        error: 'Trading credentials storage not configured. Contact admin.'
+      });
+    }
+
+    // Validate credential format
+    const validation = await credentialStore.validate({ apiKey, apiSecret, apiPassphrase });
+    if (!validation.valid) {
+      return res.status(400).json({ error: validation.error });
+    }
+
+    // Store encrypted credentials
+    await credentialStore.store(req.user!.id, { apiKey, apiSecret, apiPassphrase });
+
+    console.log(`[Credentials] User ${req.user!.id} registered CLOB credentials`);
+    res.json({ success: true, message: 'Credentials stored securely' });
+  } catch (err) {
+    console.error('Error storing credentials:', err);
+    res.status(500).json({ error: 'Failed to store credentials' });
+  }
+});
+
+// Delete CLOB API credentials
+app.delete('/api/user/credentials', authMiddleware, async (req, res) => {
+  try {
+    await credentialStore.delete(req.user!.id);
+    console.log(`[Credentials] User ${req.user!.id} deleted CLOB credentials`);
+    res.json({ success: true, message: 'Credentials deleted' });
+  } catch (err) {
+    console.error('Error deleting credentials:', err);
+    res.status(500).json({ error: 'Failed to delete credentials' });
+  }
+});
+
+// ============ ORDER EXECUTION ENDPOINTS ============
+
 // Place order (authenticated user)
 app.post('/api/user/order', authMiddleware, async (req, res) => {
   try {
     const { tokenId, side, price, size, orderType, tickSize, negRisk } = req.body;
-    
-    if (!tokenId || !side || price === undefined || !size) {
+
+    console.log('[Order] Received:', {
+      userId: req.user?.id,
+      tokenId,
+      side,
+      price,
+      size,
+      orderType,
+      priceType: typeof price
+    });
+
+    if (!tokenId || !side || price === undefined || price === null || !size) {
+      console.log('[Order] Validation failed: missing fields');
       return res.status(400).json({
-        error: 'Missing required fields: tokenId, side, price, size'
+        error: 'Missing required fields: tokenId, side, price, size',
+        received: { tokenId: !!tokenId, side: !!side, price, size }
       });
     }
-    
-    if (price < 0.01 || price > 0.99) {
-      return res.status(400).json({ error: 'Price must be between 0.01 and 0.99' });
+
+    const priceNum = parseFloat(price);
+    const sizeNum = parseFloat(size);
+
+    if (isNaN(priceNum) || priceNum < 0.01 || priceNum > 0.99) {
+      console.log('[Order] Validation failed: price out of range', { price, priceNum });
+      return res.status(400).json({
+        error: `Price must be between 0.01 and 0.99 (received: ${price})`,
+        hint: 'For market orders, ensure orderbook has valid best bid/ask'
+      });
     }
-    
+
+    if (isNaN(sizeNum) || sizeNum <= 0) {
+      console.log('[Order] Validation failed: invalid size', { size, sizeNum });
+      return res.status(400).json({ error: `Size must be greater than 0 (received: ${size})` });
+    }
+
     if (!['BUY', 'SELL'].includes(side.toUpperCase())) {
       return res.status(400).json({ error: 'Side must be BUY or SELL' });
     }
-    
+
     const executor = await getMultiUserExecutor();
     const response = await executor.executeOrder({
       userId: req.user!.id,
       tokenId,
       side: side.toUpperCase() as 'BUY' | 'SELL',
-      price: parseFloat(price),
-      size: parseFloat(size),
+      price: priceNum,
+      size: sizeNum,
       orderType: orderType || 'GTC',
       tickSize: tickSize || '0.01',
       negRisk: negRisk || false,
     });
-    
+
+    console.log('[Order] Response:', { orderId: response.orderId, status: response.status, error: response.errorMessage });
     res.json(response);
   } catch (err) {
     console.error('Error placing user order:', err);

@@ -26,6 +26,7 @@ import {
   POLYGON_CONTRACTS,
 } from '../../types/trading.js';
 import { UserManager, User } from './userManager.js';
+import { CredentialStore, createCredentialStore } from './credentialStore.js';
 
 // Rate limits per user
 const USER_DAILY_LIMIT = 50;  // Orders per user per day
@@ -48,6 +49,7 @@ export class MultiUserExecutor {
   private redis: Redis;
   private config: MultiUserExecutorConfig;
   private userManager: UserManager;
+  private credentialStore: CredentialStore;
   private builderConfig: BuilderConfig;
   private initialized = false;
 
@@ -63,16 +65,31 @@ export class MultiUserExecutor {
     this.db = db;
     this.redis = redis;
     this.userManager = userManager;
+    this.credentialStore = createCredentialStore(db);
     this.config = config;
 
     // Builder config for order attribution
-    this.builderConfig = new BuilderConfig({
-      localBuilderCreds: {
-        key: config.builderCredentials.key,
-        secret: config.builderCredentials.secret,
-        passphrase: config.builderCredentials.passphrase,
-      },
-    });
+    // Only initialize if credentials are provided
+    if (config.builderCredentials.key && config.builderCredentials.secret && config.builderCredentials.passphrase) {
+      this.builderConfig = new BuilderConfig({
+        localBuilderCreds: {
+          key: config.builderCredentials.key,
+          secret: config.builderCredentials.secret,
+          passphrase: config.builderCredentials.passphrase,
+        },
+      });
+    } else {
+      console.warn('[MultiUserExecutor] ⚠️ Builder credentials not configured - trading will be disabled');
+      console.warn('[MultiUserExecutor] Set POLY_BUILDER_API_KEY, POLY_BUILDER_SECRET, POLY_BUILDER_PASSPHRASE env vars');
+      this.builderConfig = null as any;
+    }
+  }
+
+  /**
+   * Check if trading is enabled (has valid credentials)
+   */
+  isTradingEnabled(): boolean {
+    return !!this.builderConfig;
   }
 
   /**
@@ -97,6 +114,11 @@ export class MultiUserExecutor {
     transactionHash?: string;
     error?: string;
   }> {
+    // Check if trading is enabled
+    if (!this.isTradingEnabled()) {
+      return { success: false, error: 'Trading is disabled - builder credentials not configured' };
+    }
+
     const user = await this.userManager.getUserById(userId);
     if (!user) {
       return { success: false, error: 'User not found' };
@@ -168,6 +190,16 @@ export class MultiUserExecutor {
     const orderId = this.generateOrderId();
     const timestamp = Date.now();
 
+    // Check if trading is enabled
+    if (!this.isTradingEnabled()) {
+      return this.buildErrorResponse(
+        orderId, 
+        orderRequest, 
+        timestamp, 
+        'Trading is disabled - builder credentials not configured. Contact admin.'
+      );
+    }
+
     // Get user
     const user = await this.userManager.getUserById(userId);
     if (!user) {
@@ -232,6 +264,13 @@ export class MultiUserExecutor {
 
   /**
    * Execute order via CLOB
+   *
+   * Flow:
+   * 1. Retrieve user's encrypted API credentials
+   * 2. Decrypt credentials
+   * 3. Create CLOB client with user's credentials + builder attribution
+   * 4. Create and sign order
+   * 5. Submit to CLOB API
    */
   private async executeViaClob(user: User, request: OrderRequest): Promise<{
     status: TransactionState;
@@ -239,23 +278,131 @@ export class MultiUserExecutor {
     transactionHash?: string;
     errorMessage?: string;
   }> {
-    // Note: In a full implementation, the user would sign the order client-side
-    // and we'd add builder headers server-side before submitting.
-    // 
-    // For this implementation, we're demonstrating the server-side flow.
-    // In production, you'd use:
-    // 1. Client-side order signing (user's wallet)
-    // 2. Server adds builder headers
-    // 3. Submit to CLOB
+    console.log(`[MultiUserExecutor] executeViaClob called for user ${user.id}:`, {
+      tokenId: request.tokenId,
+      side: request.side,
+      price: request.price,
+      size: request.size,
+      orderType: request.orderType,
+    });
 
-    // This is a placeholder that shows the structure
-    // Real implementation requires user to sign orders
-    
-    return {
-      status: 'SUBMITTED',
-      executionPath: 'CLOB_RELAYER',
-      errorMessage: 'Order queued - user signature required',
-    };
+    // Check if credential encryption is configured
+    if (!this.credentialStore.isConfigured()) {
+      console.error('[MultiUserExecutor] Credential encryption not configured');
+      return {
+        status: 'FAILED',
+        executionPath: 'CLOB_RELAYER',
+        errorMessage: 'Trading not configured. Contact admin.',
+      };
+    }
+
+    // Retrieve user's credentials
+    const credentials = await this.credentialStore.retrieve(user.id);
+    if (!credentials) {
+      console.log(`[MultiUserExecutor] No credentials found for user ${user.id}`);
+      return {
+        status: 'FAILED',
+        executionPath: 'CLOB_RELAYER',
+        errorMessage: 'API credentials not registered. Please set up your Polymarket CLOB credentials first.',
+      };
+    }
+
+    try {
+      // Create CLOB client with user's credentials
+      const clobClient = new ClobClient(
+        this.config.clobUrl,
+        this.config.chainId,
+        undefined, // No signer needed - using API credentials
+        {
+          key: credentials.apiKey,
+          secret: credentials.apiSecret,
+          passphrase: credentials.apiPassphrase,
+        },
+        undefined, // signature type
+        undefined, // funder address
+        undefined,
+        false,
+        this.builderConfig // Builder attribution
+      );
+
+      // Convert order type
+      const orderType = this.mapOrderType(request.orderType || 'GTC');
+      const side = request.side === 'BUY' ? Side.BUY : Side.SELL;
+
+      console.log(`[MultiUserExecutor] Creating order for user ${user.id}: ${request.side} ${request.size} @ ${request.price}`);
+
+      // Create the order
+      const order = await clobClient.createOrder({
+        tokenID: request.tokenId,
+        price: request.price,
+        side,
+        size: request.size,
+      }, {
+        tickSize: request.tickSize || '0.01',
+        negRisk: request.negRisk || false,
+      });
+
+      console.log(`[MultiUserExecutor] Order created, submitting to CLOB...`);
+
+      // Submit the order
+      const response = await clobClient.postOrder(order, orderType);
+
+      console.log(`[MultiUserExecutor] CLOB response:`, {
+        success: response.success,
+        errorMsg: response.errorMsg,
+        orderID: response.orderID,
+      });
+
+      if (response.success) {
+        return {
+          status: 'SUBMITTED',
+          executionPath: 'CLOB_RELAYER',
+          transactionHash: response.transactionsHashes?.[0],
+        };
+      } else {
+        return {
+          status: 'FAILED',
+          executionPath: 'CLOB_RELAYER',
+          errorMessage: response.errorMsg || 'Order rejected by CLOB',
+        };
+      }
+    } catch (error) {
+      console.error(`[MultiUserExecutor] CLOB execution error for user ${user.id}:`, error);
+
+      // Parse error message for common issues
+      let errorMessage = error instanceof Error ? error.message : 'Unknown CLOB error';
+
+      // Make error messages more user-friendly
+      if (errorMessage.includes('insufficient balance') || errorMessage.includes('Insufficient')) {
+        errorMessage = 'Insufficient balance. Please deposit USDC to your Polymarket account.';
+      } else if (errorMessage.includes('invalid signature') || errorMessage.includes('Unauthorized')) {
+        errorMessage = 'Invalid API credentials. Please update your Polymarket CLOB credentials.';
+      } else if (errorMessage.includes('rate limit') || errorMessage.includes('429')) {
+        errorMessage = 'Rate limit exceeded. Please wait a moment and try again.';
+      }
+
+      return {
+        status: 'FAILED',
+        executionPath: 'CLOB_RELAYER',
+        errorMessage,
+      };
+    }
+  }
+
+  /**
+   * Map order type to CLOB order type
+   */
+  private mapOrderType(type: string): ClobOrderType {
+    switch (type) {
+      case 'GTC':
+        return ClobOrderType.GTC;
+      case 'GTD':
+        return ClobOrderType.GTD;
+      case 'FOK':
+        return ClobOrderType.FOK;
+      default:
+        return ClobOrderType.GTC;
+    }
   }
 
   /**
@@ -455,6 +602,7 @@ export class MultiUserExecutor {
    */
   async getStatus(): Promise<{
     initialized: boolean;
+    tradingEnabled: boolean;
     platformRateLimit: {
       dailyLimit: number;
       used: number;
@@ -468,6 +616,7 @@ export class MultiUserExecutor {
 
     return {
       initialized: this.initialized,
+      tradingEnabled: this.isTradingEnabled(),
       platformRateLimit,
       activeUsers: platformStats.activeUsers24h,
     };

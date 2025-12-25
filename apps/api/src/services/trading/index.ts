@@ -9,4 +9,5 @@ export { OnChainExecutor, createOnChainExecutorFromEnv } from './onChainExecutor
 export { OrderExecutor, createOrderExecutorFromEnv } from './orderExecutor.js';
 export { UserManager, createUserManagerFromEnv } from './userManager.js';
 export { MultiUserExecutor, createMultiUserExecutorFromEnv } from './multiUserExecutor.js';
+export { CredentialStore, createCredentialStore } from './credentialStore.js';
 

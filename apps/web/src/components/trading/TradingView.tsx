@@ -1,9 +1,11 @@
-import { useState, useCallback } from 'react';
+import { useState, useCallback, useEffect } from 'react';
 import { MarketSelector } from './MarketSelector';
 import { Orderbook } from './Orderbook';
 import { OrderForm } from './OrderForm';
 import { Positions } from './Positions';
 import { PriceChart } from './PriceChart';
+import { useAuthStore } from '../../stores/authStore';
+import { getCredentialsStatus } from '../../lib/tradingApi';
 
 interface Market {
   condition_id: string;
@@ -12,16 +14,31 @@ interface Market {
   volume: number;
   outcome_yes_price: number;
   outcome_no_price: number;
-  resolved: boolean;
+  resolved: boolean | null;
   yes_token_id?: string;
   no_token_id?: string;
 }
 
 export function TradingView() {
+  const { token, isAuthenticated, credentialsChecked, setHasCredentials } = useAuthStore();
   const [selectedMarket, setSelectedMarket] = useState<Market | null>(null);
   const [orderPrice, setOrderPrice] = useState<number>(0.5);
   const [bestBid, setBestBid] = useState<number | undefined>();
   const [bestAsk, setBestAsk] = useState<number | undefined>();
+
+  // Check credentials status when authenticated
+  useEffect(() => {
+    if (isAuthenticated && token && !credentialsChecked) {
+      getCredentialsStatus(token)
+        .then((status) => {
+          setHasCredentials(status.hasCredentials);
+        })
+        .catch((err) => {
+          console.error('Failed to check credentials status:', err);
+          setHasCredentials(false);
+        });
+    }
+  }, [isAuthenticated, token, credentialsChecked, setHasCredentials]);
 
   const handleBestPricesChange = useCallback((bid: number | undefined, ask: number | undefined) => {
     setBestBid(bid);
@@ -89,8 +106,11 @@ export function TradingView() {
       {/* Right Column - Order Form */}
       <div className="col-span-12 lg:col-span-4">
         <OrderForm
-          tokenId={yesTokenId}
+          yesTokenId={yesTokenId}
+          noTokenId={selectedMarket?.no_token_id}
           marketName={selectedMarket?.question || 'Select a market'}
+          yesPrice={selectedMarket?.outcome_yes_price}
+          noPrice={selectedMarket?.outcome_no_price}
           currentPrice={orderPrice}
           bestBid={bestBid}
           bestAsk={bestAsk}

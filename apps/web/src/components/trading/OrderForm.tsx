@@ -1,10 +1,15 @@
-import { useState } from 'react';
-import { useAuthStore } from '../../stores/authStore';
-import { placeOrder } from '../../lib/tradingApi';
+import { useState, useEffect } from 'react';
+import { useAccount } from 'wagmi';
+import { useWalletTrading } from '../../hooks/useWalletTrading';
+import { useDirectTrading } from '../../hooks/useDirectTrading';
+import { DirectCredentialsForm } from './DirectCredentialsForm';
 
 interface OrderFormProps {
-  tokenId: string;
+  yesTokenId: string;
+  noTokenId?: string;
   marketName: string;
+  yesPrice?: number;
+  noPrice?: number;
   currentPrice?: number;
   bestBid?: number;
   bestAsk?: number;
@@ -12,9 +17,31 @@ interface OrderFormProps {
 }
 
 type OrderMode = 'LIMIT' | 'MARKET';
+type TradingMethod = 'WALLET' | 'API';
+type OutcomeToken = 'YES' | 'NO';
 
-export function OrderForm({ tokenId, marketName, currentPrice = 0.5, bestBid, bestAsk, onOrderPlaced }: OrderFormProps) {
-  const { token, isAuthenticated } = useAuthStore();
+export function OrderForm({
+  yesTokenId,
+  noTokenId,
+  marketName,
+  yesPrice = 0.5,
+  noPrice = 0.5,
+  currentPrice = 0.5,
+  bestBid,
+  bestAsk,
+  onOrderPlaced
+}: OrderFormProps) {
+  const { isConnected } = useAccount();
+
+  // Primary method: Wallet-based signing (like native Polymarket)
+  const walletTrading = useWalletTrading();
+
+  // Fallback method: API credentials
+  const apiTrading = useDirectTrading();
+
+  const [tradingMethod, setTradingMethod] = useState<TradingMethod>('WALLET');
+  const [showCredentialsForm, setShowCredentialsForm] = useState(false);
+  const [outcomeToken, setOutcomeToken] = useState<OutcomeToken>('YES');
   const [side, setSide] = useState<'BUY' | 'SELL'>('BUY');
   const [orderMode, setOrderMode] = useState<OrderMode>('LIMIT');
   const [price, setPrice] = useState(currentPrice.toString());
@@ -23,57 +50,194 @@ export function OrderForm({ tokenId, marketName, currentPrice = 0.5, bestBid, be
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
 
+  // Get the active token ID based on selection
+  const activeTokenId = outcomeToken === 'YES' ? yesTokenId : (noTokenId || yesTokenId);
+  const hasNoToken = !!noTokenId;
+
+  // Update price when currentPrice changes (from orderbook click)
+  useEffect(() => {
+    if (currentPrice && currentPrice !== parseFloat(price)) {
+      setPrice(currentPrice.toString());
+    }
+  }, [currentPrice]);
+
   // For market orders, use best bid/ask price
-  const marketPrice = side === 'BUY' 
-    ? (bestAsk || currentPrice) 
+  const marketPrice = side === 'BUY'
+    ? (bestAsk || currentPrice)
     : (bestBid || currentPrice);
-  
+
   const effectivePrice = orderMode === 'MARKET' ? marketPrice : (parseFloat(price) || 0);
   const priceNum = effectivePrice;
+
+  // Validate price is in valid range (0.01 - 0.99)
+  const isPriceValid = priceNum >= 0.01 && priceNum <= 0.99;
+
+  // For market orders, check if we have orderbook data
+  const hasOrderbookData = bestBid !== undefined || bestAsk !== undefined;
+  const canPlaceMarketOrder = orderMode !== 'MARKET' || (
+    (side === 'BUY' && bestAsk !== undefined && bestAsk >= 0.01 && bestAsk <= 0.99) ||
+    (side === 'SELL' && bestBid !== undefined && bestBid >= 0.01 && bestBid <= 0.99)
+  );
+
+  // Determine why market order can't be placed
+  const marketOrderBlockedReason = orderMode === 'MARKET' && !canPlaceMarketOrder
+    ? (!hasOrderbookData
+        ? 'LOADING ORDERBOOK...'
+        : side === 'BUY' && bestAsk === undefined
+        ? 'NO ASKS AVAILABLE'
+        : side === 'SELL' && bestBid === undefined
+        ? 'NO BIDS AVAILABLE'
+        : 'PRICE OUT OF RANGE')
+    : null;
   const sizeNum = parseFloat(size) || 0;
   const cost = priceNum * sizeNum;
-  const potentialProfit = side === 'BUY' 
-    ? sizeNum * (1 - priceNum) 
+  const potentialProfit = side === 'BUY'
+    ? sizeNum * (1 - priceNum)
     : sizeNum * priceNum;
+
+  // Get current trading state based on method
+  const currentTrading = tradingMethod === 'WALLET' ? walletTrading : apiTrading;
+  const isTradeLoading = currentTrading.isLoading || (tradingMethod === 'WALLET' && walletTrading.isInitializing);
+  const tradeError = currentTrading.error;
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!token || !isAuthenticated) return;
+    if (!isConnected) return;
+
+    // Frontend validation
+    if (!isPriceValid) {
+      setError(`Invalid price: ${effectivePrice}. Price must be between 1¢ and 99¢`);
+      return;
+    }
+
+    if (!canPlaceMarketOrder) {
+      const reason = !hasOrderbookData
+        ? 'Orderbook not loaded. Try again or use a limit order.'
+        : side === 'BUY'
+        ? 'No ask prices available. Try a limit order instead.'
+        : 'No bid prices available. Try a limit order instead.';
+      setError(`Cannot place market order: ${reason}`);
+      return;
+    }
+
+    if (!activeTokenId) {
+      setError('Please select a market first');
+      return;
+    }
 
     setIsSubmitting(true);
     setError(null);
     setSuccess(null);
 
     try {
-      const result = await placeOrder(token, {
-        tokenId,
+      console.log(`[OrderForm] Submitting via ${tradingMethod}:`, {
+        tokenId: activeTokenId,
+        outcome: outcomeToken,
+        side,
+        price: effectivePrice,
+        size: sizeNum,
+        orderType: orderMode === 'MARKET' ? 'FOK' : 'GTC'
+      });
+
+      const result = await currentTrading.placeOrder({
+        tokenId: activeTokenId,
         side,
         price: effectivePrice,
         size: sizeNum,
         orderType: orderMode === 'MARKET' ? 'FOK' : 'GTC',
       });
 
+      console.log('[OrderForm] Result:', result);
+
+      if (!result.success) {
+        setError(result.errorMessage || 'Order failed');
+        return;
+      }
+
       const orderTypeLabel = orderMode === 'MARKET' ? 'Market' : 'Limit';
       setSuccess(`${orderTypeLabel} order placed! ID: ${result.orderId?.slice(0, 8)}...`);
       onOrderPlaced?.();
-      
+
       // Clear after 3 seconds
       setTimeout(() => setSuccess(null), 3000);
-    } catch (err) {
+    } catch (err: any) {
       console.error('Order error:', err);
-      setError(err instanceof Error ? err.message : 'Order failed');
+      setError(err.message || 'Order failed');
     } finally {
       setIsSubmitting(false);
     }
   };
 
+  const isProcessing = isSubmitting || isTradeLoading;
+
   return (
     <div className="bg-terminal-surface/80 border border-terminal-border rounded-lg overflow-hidden">
       {/* Header */}
       <div className="px-4 py-3 border-b border-terminal-border">
-        <h3 className="text-white font-mono text-sm font-semibold">PLACE ORDER</h3>
+        <div className="flex items-center justify-between">
+          <h3 className="text-white font-mono text-sm font-semibold">PLACE ORDER</h3>
+          {/* Trading Method Selector */}
+          <div className="flex gap-1">
+            <button
+              onClick={() => setTradingMethod('WALLET')}
+              className={`
+                px-2 py-0.5 text-xs font-mono rounded transition-all
+                ${tradingMethod === 'WALLET'
+                  ? 'bg-neon-green/20 text-neon-green'
+                  : 'text-terminal-muted hover:text-white'
+                }
+              `}
+              title="Sign orders with your wallet (native Polymarket method)"
+            >
+              WALLET
+            </button>
+            <button
+              onClick={() => setTradingMethod('API')}
+              className={`
+                px-2 py-0.5 text-xs font-mono rounded transition-all
+                ${tradingMethod === 'API'
+                  ? 'bg-neon-cyan/20 text-neon-cyan'
+                  : 'text-terminal-muted hover:text-white'
+                }
+              `}
+              title="Use API credentials for trading"
+            >
+              API
+            </button>
+          </div>
+        </div>
         <div className="text-terminal-muted text-xs truncate mt-1">{marketName}</div>
       </div>
+
+      {/* YES/NO Token Toggle */}
+      {hasNoToken && (
+        <div className="flex border-b border-terminal-border">
+          <button
+            onClick={() => setOutcomeToken('YES')}
+            className={`
+              flex-1 py-2 font-mono font-bold text-xs transition-all
+              ${outcomeToken === 'YES'
+                ? 'bg-neon-cyan/20 text-neon-cyan border-b-2 border-neon-cyan'
+                : 'text-terminal-muted hover:text-white hover:bg-terminal-surface'
+              }
+            `}
+          >
+            YES @ {(yesPrice * 100).toFixed(0)}¢
+          </button>
+          <button
+            onClick={() => setOutcomeToken('NO')}
+            className={`
+              flex-1 py-2 font-mono font-bold text-xs transition-all
+              ${outcomeToken === 'NO'
+                ? 'bg-neon-magenta/20 text-neon-magenta border-b-2 border-neon-magenta'
+                : 'text-terminal-muted hover:text-white hover:bg-terminal-surface'
+              }
+            `}
+          >
+            NO @ {(noPrice * 100).toFixed(0)}¢
+          </button>
+        </div>
+      )}
 
       {/* Buy/Sell Toggle */}
       <div className="flex border-b border-terminal-border">
@@ -87,7 +251,7 @@ export function OrderForm({ tokenId, marketName, currentPrice = 0.5, bestBid, be
             }
           `}
         >
-          BUY YES
+          BUY {outcomeToken}
         </button>
         <button
           onClick={() => setSide('SELL')}
@@ -99,7 +263,7 @@ export function OrderForm({ tokenId, marketName, currentPrice = 0.5, bestBid, be
             }
           `}
         >
-          SELL YES
+          SELL {outcomeToken}
         </button>
       </div>
 
@@ -169,8 +333,8 @@ export function OrderForm({ tokenId, marketName, currentPrice = 0.5, bestBid, be
                   onClick={() => setPrice(p.toString())}
                   className={`
                     flex-1 py-1 text-xs font-mono rounded border transition-all
-                    ${parseFloat(price) === p 
-                      ? 'border-neon-cyan text-neon-cyan bg-neon-cyan/10' 
+                    ${parseFloat(price) === p
+                      ? 'border-neon-cyan text-neon-cyan bg-neon-cyan/10'
                       : 'border-terminal-border text-terminal-muted hover:border-terminal-muted'
                     }
                   `}
@@ -194,7 +358,7 @@ export function OrderForm({ tokenId, marketName, currentPrice = 0.5, bestBid, be
               </span>
             </div>
             <div className="text-terminal-muted text-xs mt-2">
-              ⚡ Executes immediately at best available price
+              Executes immediately at best available price
             </div>
           </div>
         )}
@@ -227,8 +391,8 @@ export function OrderForm({ tokenId, marketName, currentPrice = 0.5, bestBid, be
                 onClick={() => setSize(s.toString())}
                 className={`
                   flex-1 py-1 text-xs font-mono rounded border transition-all
-                  ${parseInt(size) === s 
-                    ? 'border-neon-cyan text-neon-cyan bg-neon-cyan/10' 
+                  ${parseInt(size) === s
+                    ? 'border-neon-cyan text-neon-cyan bg-neon-cyan/10'
                     : 'border-terminal-border text-terminal-muted hover:border-terminal-muted'
                   }
                 `}
@@ -257,10 +421,42 @@ export function OrderForm({ tokenId, marketName, currentPrice = 0.5, bestBid, be
           </div>
         </div>
 
+        {/* Geoblock Warning */}
+        {walletTrading.isGeoblocked && (
+          <div className="bg-neon-red/10 border border-neon-red/30 rounded-lg p-3 text-sm">
+            <div className="text-neon-red font-mono text-xs mb-1">REGION RESTRICTED</div>
+            <div className="text-terminal-muted text-xs">
+              Trading is not available in {walletTrading.geoblockCountry || 'your region'}.
+              Polymarket restricts access from certain locations due to regulatory requirements.
+            </div>
+          </div>
+        )}
+
+        {/* Network Warning */}
+        {tradingMethod === 'WALLET' && isConnected && !walletTrading.isOnPolygon && !walletTrading.isGeoblocked && (
+          <div className="bg-neon-amber/10 border border-neon-amber/30 rounded-lg p-3 text-sm">
+            <div className="text-neon-amber font-mono text-xs mb-1">WRONG NETWORK</div>
+            <div className="text-terminal-muted text-xs">
+              Please switch to Polygon network. Trading will prompt you to switch automatically.
+            </div>
+          </div>
+        )}
+
+        {/* Wallet Method Info */}
+        {tradingMethod === 'WALLET' && !walletTrading.isReady && isConnected && walletTrading.isOnPolygon && !walletTrading.isGeoblocked && (
+          <div className="bg-neon-green/10 border border-neon-green/30 rounded-lg p-3 text-sm">
+            <div className="text-neon-green font-mono text-xs mb-1">WALLET SIGNING</div>
+            <div className="text-terminal-muted text-xs">
+              Your first trade will prompt a signature to enable trading.
+              This is the native Polymarket method - no API keys needed.
+            </div>
+          </div>
+        )}
+
         {/* Error/Success Messages */}
-        {error && (
+        {(error || tradeError) && (
           <div className="bg-neon-red/10 border border-neon-red/30 rounded-lg p-3 text-neon-red text-sm">
-            {error}
+            {error || tradeError}
           </div>
         )}
         {success && (
@@ -270,35 +466,76 @@ export function OrderForm({ tokenId, marketName, currentPrice = 0.5, bestBid, be
         )}
 
         {/* Submit Button */}
-        <button
-          type="submit"
-          disabled={!isAuthenticated || isSubmitting || effectivePrice <= 0 || sizeNum <= 0}
-          className={`
-            w-full py-4 rounded-lg font-mono font-bold text-sm
-            transition-all duration-200
-            disabled:opacity-50 disabled:cursor-not-allowed
-            ${!isAuthenticated 
-              ? 'bg-terminal-muted text-white'
-              : orderMode === 'MARKET'
-              ? 'bg-neon-amber text-black hover:bg-neon-amber/80'
-              : side === 'BUY'
-              ? 'bg-neon-green text-black hover:bg-neon-green/80'
-              : 'bg-neon-red text-white hover:bg-neon-red/80'
-            }
-          `}
-        >
-          {!isAuthenticated ? (
-            '⚡ CONNECT WALLET TO TRADE'
-          ) : isSubmitting ? (
-            <span className="animate-pulse">PLACING ORDER...</span>
-          ) : orderMode === 'MARKET' ? (
-            `⚡ ${side} ${sizeNum} NOW`
-          ) : (
-            `${side} ${sizeNum} @ ${(effectivePrice * 100).toFixed(0)}¢`
-          )}
-        </button>
+        {!isConnected ? (
+          <button
+            type="button"
+            disabled
+            className="w-full py-4 rounded-lg font-mono font-bold text-sm bg-terminal-muted text-white opacity-50 cursor-not-allowed"
+          >
+            CONNECT WALLET TO TRADE
+          </button>
+        ) : tradingMethod === 'API' && !apiTrading.hasCredentials ? (
+          <button
+            type="button"
+            onClick={() => setShowCredentialsForm(true)}
+            className="
+              w-full py-4 rounded-lg font-mono font-bold text-sm
+              bg-neon-cyan text-black hover:bg-neon-cyan/80
+              transition-all duration-200
+            "
+          >
+            SET UP API CREDENTIALS
+          </button>
+        ) : walletTrading.isGeoblocked ? (
+          <button
+            type="button"
+            disabled
+            className="w-full py-4 rounded-lg font-mono font-bold text-sm bg-neon-red/20 text-neon-red opacity-50 cursor-not-allowed"
+          >
+            TRADING UNAVAILABLE IN YOUR REGION
+          </button>
+        ) : (
+          <button
+            type="submit"
+            disabled={isProcessing || !isPriceValid || !canPlaceMarketOrder || sizeNum <= 0}
+            className={`
+              w-full py-4 rounded-lg font-mono font-bold text-sm
+              transition-all duration-200
+              disabled:opacity-50 disabled:cursor-not-allowed
+              ${orderMode === 'MARKET'
+                ? 'bg-neon-amber text-black hover:bg-neon-amber/80'
+                : side === 'BUY'
+                ? 'bg-neon-green text-black hover:bg-neon-green/80'
+                : 'bg-neon-red text-white hover:bg-neon-red/80'
+              }
+            `}
+          >
+            {isProcessing ? (
+              <span className="animate-pulse">
+                {walletTrading.isInitializing ? 'SIGNING...' : 'PLACING ORDER...'}
+              </span>
+            ) : marketOrderBlockedReason ? (
+              marketOrderBlockedReason
+            ) : orderMode === 'MARKET' ? (
+              `${side} ${outcomeToken} ${sizeNum} @ ${(effectivePrice * 100).toFixed(1)}¢`
+            ) : (
+              `${side} ${outcomeToken} ${sizeNum} @ ${(effectivePrice * 100).toFixed(0)}¢`
+            )}
+          </button>
+        )}
       </form>
+
+      {/* API Credentials Setup Modal */}
+      {showCredentialsForm && (
+        <div className="fixed inset-0 bg-black/80 flex items-center justify-center z-50 p-4">
+          <div className="max-w-md w-full">
+            <DirectCredentialsForm
+              onSuccess={() => setShowCredentialsForm(false)}
+              onCancel={() => setShowCredentialsForm(false)}
+            />
+          </div>
+        </div>
+      )}
     </div>
   );
 }
-

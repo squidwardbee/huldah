@@ -52,6 +52,39 @@ export async function getUserRateLimit(token: string) {
   return data;
 }
 
+// Credential endpoints
+export async function getCredentialsStatus(token: string) {
+  const { data } = await api.get('/api/user/credentials/status', {
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  return data as {
+    hasCredentials: boolean;
+    encryptionConfigured: boolean;
+    canTrade: boolean;
+  };
+}
+
+export async function registerCredentials(
+  token: string,
+  credentials: {
+    apiKey: string;
+    apiSecret: string;
+    apiPassphrase: string;
+  }
+) {
+  const { data } = await api.post('/api/user/credentials', credentials, {
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  return data as { success: boolean; message: string };
+}
+
+export async function deleteCredentials(token: string) {
+  const { data } = await api.delete('/api/user/credentials', {
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  return data as { success: boolean; message: string };
+}
+
 // Trading endpoints
 export async function placeOrder(
   token: string,

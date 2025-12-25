@@ -3,7 +3,7 @@ import { polygon } from 'wagmi/chains';
 import { injected, walletConnect } from 'wagmi/connectors';
 
 // WalletConnect project ID (get from cloud.walletconnect.com)
-const projectId = 'YOUR_PROJECT_ID';
+const projectId = '00f660400827984d140e8deed2c19557';
 
 export const wagmiConfig = createConfig({
   chains: [polygon],
@@ -21,4 +21,5 @@ declare module 'wagmi' {
     config: typeof wagmiConfig;
   }
 }
+
 

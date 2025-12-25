@@ -1,6 +1,9 @@
 import axios from 'axios';
 
-const GAMMA_URL = 'https://gamma-api.polymarket.com';
+const axiosClient = axios.create({
+  baseURL: 'https://gamma-api.polymarket.com',
+  timeout: 15000,
+});
 
 // Interface matches actual Gamma API response (camelCase)
 export interface GammaMarket {
@@ -23,10 +26,7 @@ export interface GammaMarket {
 }
 
 export class GammaClient {
-  private axios = axios.create({
-    baseURL: GAMMA_URL,
-    timeout: 15000
-  });
+  private axios = axiosClient;
 
   async getMarkets(params: {
     active?: boolean;

@@ -143,3 +143,4 @@ checkDatabase().catch(err => {
   process.exit(1);
 });
 
+

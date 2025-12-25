@@ -134,3 +134,4 @@ CREATE TABLE IF NOT EXISTS user_nonces (
 
 CREATE INDEX IF NOT EXISTS idx_user_nonces_address ON user_nonces(eoa_address);
 
+
