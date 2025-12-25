@@ -287,12 +287,14 @@ app.get('/api/markets/stats', async (_req, res) => {
 // Get markets list
 // By default shows only open (unresolved) markets
 // Use ?resolved=true to see resolved markets, ?all=true to see everything
+// Use ?category=Crypto to filter by category
 app.get('/api/markets', async (req, res) => {
   try {
     const limit = Math.min(parseInt(req.query.limit as string) || 100, 500);
     const showAll = req.query.all === 'true';
     const showResolved = req.query.resolved === 'true';
     const tradeableOnly = req.query.tradeable !== 'false'; // Default: only tradeable
+    const category = req.query.category as string | undefined;
 
     // Default: show only open (unresolved) markets
     // ?resolved=true: show only resolved markets
@@ -314,9 +316,15 @@ app.get('/api/markets', async (req, res) => {
         COALESCE(resolved, false) as resolved,
         resolution_outcome,
         end_date,
-        metadata,
         yes_token_id,
-        no_token_id
+        no_token_id,
+        image_url,
+        icon_url,
+        category,
+        COALESCE(volume_24h, 0) as volume_24h,
+        COALESCE(price_change_24h, 0) as price_change_24h,
+        best_bid,
+        best_ask
       FROM markets
       WHERE ($1::boolean IS NULL OR COALESCE(resolved, false) = $1)
         AND question IS NOT NULL
@@ -325,16 +333,35 @@ app.get('/api/markets', async (req, res) => {
           AND COALESCE(last_price_yes, 0.5) <= 0.95
           AND COALESCE(volume, 0) > 10000
         ))
+        AND ($4::text IS NULL OR category = $4)
       ORDER BY
         volume DESC NULLS LAST,
         question ASC
       LIMIT $2
-    `, [resolvedFilter, limit, tradeableOnly]);
+    `, [resolvedFilter, limit, tradeableOnly, category || null]);
 
     res.json(rows);
   } catch (err) {
     console.error('Error fetching markets:', err);
     res.status(500).json({ error: 'Failed to fetch markets' });
+  }
+});
+
+// Get available categories
+app.get('/api/markets/categories', async (_req, res) => {
+  try {
+    const { rows } = await db.query(`
+      SELECT DISTINCT category, COUNT(*) as count
+      FROM markets
+      WHERE category IS NOT NULL
+        AND COALESCE(resolved, false) = false
+      GROUP BY category
+      ORDER BY count DESC
+    `);
+    res.json(rows);
+  } catch (err) {
+    console.error('Error fetching categories:', err);
+    res.status(500).json({ error: 'Failed to fetch categories' });
   }
 });
 

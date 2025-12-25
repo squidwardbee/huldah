@@ -47,6 +47,14 @@ export interface GammaMarket {
   outcomes?: string;              // JSON array like "[\"Yes\", \"No\"]"
   // For resolved markets
   resolved?: boolean;
+  // Additional fields for UI
+  image?: string;                 // Market image URL
+  icon?: string;                  // Market icon URL
+  volume24hr?: string;            // 24h trading volume
+  oneDayPriceChange?: string;     // 24h price change (decimal, e.g., "0.05" = 5%)
+  bestBid?: string;               // Current best bid
+  bestAsk?: string;               // Current best ask
+  description?: string;           // Market description
 }
 
 export class GammaClient {

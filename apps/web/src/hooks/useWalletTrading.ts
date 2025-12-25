@@ -175,6 +175,14 @@ export function useWalletTrading() {
     }
   }, [connector, address, error]);
 
+  // Track if we've tried auto-init for this address
+  const hasTriedAutoInit = useRef(false);
+
+  // Reset auto-init flag when address changes
+  useEffect(() => {
+    hasTriedAutoInit.current = false;
+  }, [address]);
+
   /**
    * Initialize CLOB client with wallet signer
    * Derives API credentials from wallet signature on first use
@@ -201,20 +209,24 @@ export function useWalletTrading() {
 
     try {
       // Ensure on Polygon
-      const currentChain = getChainId(wagmiConfig);
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const currentChain = getChainId(wagmiConfig as any);
       if (currentChain !== CHAIN_ID) {
         console.log('[useWalletTrading] Switching to Polygon...');
-        await switchChain(wagmiConfig, { chainId: CHAIN_ID });
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        await switchChain(wagmiConfig as any, { chainId: CHAIN_ID });
 
         // Wait for chain switch
         let attempts = 0;
         while (attempts < 10) {
           await new Promise(resolve => setTimeout(resolve, 500));
-          if (getChainId(wagmiConfig) === CHAIN_ID) break;
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          if (getChainId(wagmiConfig as any) === CHAIN_ID) break;
           attempts++;
         }
 
-        if (getChainId(wagmiConfig) !== CHAIN_ID) {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        if (getChainId(wagmiConfig as any) !== CHAIN_ID) {
           throw new Error('Please switch to Polygon network');
         }
       }
@@ -262,6 +274,11 @@ export function useWalletTrading() {
 
           setHasCredentials(true);
           setIsReady(true);
+          console.log('[useWalletTrading] Client initialized from cache', {
+            hasClient: !!clobClientRef.current,
+            funder,
+            signatureType,
+          });
           return true;
         }
       }
@@ -325,7 +342,11 @@ export function useWalletTrading() {
 
       setHasCredentials(true);
       setIsReady(true);
-      console.log('[useWalletTrading] Client initialized successfully');
+      console.log('[useWalletTrading] Client initialized successfully', {
+        hasClient: !!clobClientRef.current,
+        proxyWallet,
+        signatureType: SIGNATURE_TYPE.GNOSIS_SAFE,
+      });
       return true;
 
     } catch (err: any) {
@@ -348,6 +369,26 @@ export function useWalletTrading() {
       setIsInitializing(false);
     }
   }, [connector, address, isReady, geoblock, proxyWallet]);
+
+  // Auto-initialize when wallet connects on Polygon
+  useEffect(() => {
+    // Only auto-init once per session, when connected on Polygon and not already ready
+    if (
+      isConnected &&
+      connector &&
+      address &&
+      chainId === CHAIN_ID &&
+      !isReady &&
+      !isInitializing &&
+      !hasTriedAutoInit.current &&
+      geoblock !== null && // Wait for geoblock check to complete
+      !geoblock?.blocked
+    ) {
+      hasTriedAutoInit.current = true;
+      console.log('[useWalletTrading] Auto-initializing client on connect...');
+      initializeClient();
+    }
+  }, [isConnected, connector, address, chainId, isReady, isInitializing, geoblock, initializeClient]);
 
   /**
    * Place an order - signs in browser, submits directly to Polymarket
@@ -527,7 +568,12 @@ export function useWalletTrading() {
   // Auto-refresh balance when client becomes ready
   useEffect(() => {
     if (isReady && clobClientRef.current) {
-      refreshBalance();
+      console.log('[useWalletTrading] Client ready, triggering balance refresh...');
+      refreshBalance().then(result => {
+        console.log('[useWalletTrading] Balance refresh complete:', result);
+      }).catch(err => {
+        console.error('[useWalletTrading] Balance refresh error:', err);
+      });
     }
   }, [isReady, refreshBalance]);
 

@@ -93,7 +93,7 @@ export class MarketSyncService {
     // Parse outcome prices if available (outcomePrices is JSON string like "[\"0.75\", \"0.25\"]")
     let yesPrice = 0.5;
     let noPrice = 0.5;
-    
+
     if (market.outcomePrices) {
       try {
         const prices = JSON.parse(market.outcomePrices);
@@ -109,7 +109,7 @@ export class MarketSyncService {
     // Extract token_ids from clobTokenIds (JSON string like "[\"token1\", \"token2\"]")
     let yesTokenId: string | null = null;
     let noTokenId: string | null = null;
-    
+
     if (market.clobTokenIds) {
       try {
         const tokenIds = JSON.parse(market.clobTokenIds);
@@ -122,13 +122,25 @@ export class MarketSyncService {
       }
     }
 
+    // Extract category (use API category or infer from question)
+    const category = market.category || this.extractCategory(market);
+
+    // Parse 24h metrics
+    const volume24h = parseFloat(market.volume24hr || '0') || 0;
+    const priceChange24h = parseFloat(market.oneDayPriceChange || '0') || 0;
+    const bestBid = market.bestBid ? parseFloat(market.bestBid) : null;
+    const bestAsk = market.bestAsk ? parseFloat(market.bestAsk) : null;
+
     await this.db.query(`
       INSERT INTO markets (
         condition_id, question, slug,
         last_price_yes, last_price_no,
         volume, liquidity, end_date,
-        yes_token_id, no_token_id
-      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+        yes_token_id, no_token_id,
+        image_url, icon_url, category,
+        volume_24h, price_change_24h,
+        best_bid, best_ask, description
+      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)
       ON CONFLICT (condition_id) DO UPDATE SET
         question = COALESCE(EXCLUDED.question, markets.question),
         slug = COALESCE(EXCLUDED.slug, markets.slug),
@@ -138,7 +150,15 @@ export class MarketSyncService {
         liquidity = EXCLUDED.liquidity,
         end_date = COALESCE(EXCLUDED.end_date, markets.end_date),
         yes_token_id = COALESCE(EXCLUDED.yes_token_id, markets.yes_token_id),
-        no_token_id = COALESCE(EXCLUDED.no_token_id, markets.no_token_id)
+        no_token_id = COALESCE(EXCLUDED.no_token_id, markets.no_token_id),
+        image_url = COALESCE(EXCLUDED.image_url, markets.image_url),
+        icon_url = COALESCE(EXCLUDED.icon_url, markets.icon_url),
+        category = COALESCE(EXCLUDED.category, markets.category),
+        volume_24h = EXCLUDED.volume_24h,
+        price_change_24h = EXCLUDED.price_change_24h,
+        best_bid = EXCLUDED.best_bid,
+        best_ask = EXCLUDED.best_ask,
+        description = COALESCE(EXCLUDED.description, markets.description)
     `, [
       market.conditionId,
       market.question,
@@ -149,7 +169,15 @@ export class MarketSyncService {
       parseFloat(market.liquidity) || 0,
       market.endDateIso ? new Date(market.endDateIso) : (market.endDate ? new Date(market.endDate) : null),
       yesTokenId,
-      noTokenId
+      noTokenId,
+      market.image || null,
+      market.icon || null,
+      category,
+      volume24h,
+      priceChange24h,
+      bestBid,
+      bestAsk,
+      market.description || null
     ]);
   }
 
@@ -270,20 +298,25 @@ export class MarketSyncService {
    */
   private extractCategory(market: GammaMarket): string {
     if (market.category) return market.category;
-    if (market.tags && market.tags.length > 0) return market.tags[0];
-    
+
     // Try to infer from question
     const q = market.question?.toLowerCase() || '';
-    if (q.includes('bitcoin') || q.includes('btc') || q.includes('crypto') || q.includes('eth')) {
+    if (q.includes('bitcoin') || q.includes('btc') || q.includes('crypto') || q.includes('eth') || q.includes('solana')) {
       return 'Crypto';
     }
-    if (q.includes('trump') || q.includes('biden') || q.includes('election') || q.includes('president')) {
+    if (q.includes('trump') || q.includes('biden') || q.includes('election') || q.includes('president') || q.includes('congress') || q.includes('senate')) {
       return 'Politics';
     }
-    if (q.includes('nfl') || q.includes('nba') || q.includes('game') || q.includes('match')) {
+    if (q.includes('nfl') || q.includes('nba') || q.includes('super bowl') || q.includes('world cup') || q.includes('championship')) {
       return 'Sports';
     }
-    
+    if (q.includes('fed') || q.includes('interest rate') || q.includes('stock') || q.includes('s&p') || q.includes('nasdaq')) {
+      return 'Finance';
+    }
+    if (q.includes('ai') || q.includes('openai') || q.includes('chatgpt') || q.includes('tech')) {
+      return 'Tech';
+    }
+
     return 'Other';
   }
 

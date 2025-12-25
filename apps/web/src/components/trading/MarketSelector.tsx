@@ -1,18 +1,6 @@
 import { useQuery } from '@tanstack/react-query';
 import { useState } from 'react';
-import { getMarkets } from '../../lib/tradingApi';
-
-interface Market {
-  condition_id: string;
-  question: string;
-  slug: string;
-  volume: number;
-  outcome_yes_price: number;
-  outcome_no_price: number;
-  resolved: boolean | null;
-  yes_token_id?: string;
-  no_token_id?: string;
-}
+import { getMarkets, type Market } from '../../lib/tradingApi';
 
 interface MarketSelectorProps {
   selectedTokenId: string | null;

@@ -127,8 +127,42 @@ export async function getPlatformStats() {
   return data;
 }
 
-export async function getMarkets(limit = 50) {
-  const { data } = await api.get(`/api/markets?limit=${limit}`);
+export interface Market {
+  condition_id: string;
+  question: string;
+  slug: string;
+  outcome_yes_price: number;
+  outcome_no_price: number;
+  volume: number;
+  liquidity: number;
+  resolved: boolean;
+  resolution_outcome: number | null;
+  end_date: string | null;
+  yes_token_id: string | null;
+  no_token_id: string | null;
+  image_url: string | null;
+  icon_url: string | null;
+  category: string | null;
+  volume_24h: number;
+  price_change_24h: number;
+  best_bid: number | null;
+  best_ask: number | null;
+}
+
+export interface MarketCategory {
+  category: string;
+  count: number;
+}
+
+export async function getMarkets(limit = 50, category?: string): Promise<Market[]> {
+  const params = new URLSearchParams({ limit: String(limit) });
+  if (category) params.append('category', category);
+  const { data } = await api.get(`/api/markets?${params}`);
+  return data;
+}
+
+export async function getCategories(): Promise<MarketCategory[]> {
+  const { data } = await api.get('/api/markets/categories');
   return data;
 }
 

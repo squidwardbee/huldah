@@ -1,6 +1,6 @@
 import { useAccount, useConnect, useDisconnect, useSignMessage, useSwitchChain, useChainId } from 'wagmi';
 import { polygon } from 'wagmi/chains';
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef, useCallback } from 'react';
 import { useAuthStore } from '../stores/authStore';
 import { getAuthChallenge, login, logout } from '../lib/tradingApi';
 
@@ -17,15 +17,18 @@ export function ConnectWallet() {
   const [error, setError] = useState<string | null>(null);
   const [showModal, setShowModal] = useState(false);
 
+  // Track if we should auto-authenticate after connecting
+  const pendingAuthRef = useRef(false);
+
   const isOnPolygon = chainId === polygon.id;
 
-  // Close modal when connected
+  // Close modal when fully authenticated (not just connected)
   useEffect(() => {
-    if (isConnected) {
+    if (isAuthenticated) {
       setShowModal(false);
       setError(null);
     }
-  }, [isConnected]);
+  }, [isAuthenticated]);
 
   // Switch to Polygon when connected on wrong chain
   useEffect(() => {
@@ -52,6 +55,7 @@ export function ConnectWallet() {
   useEffect(() => {
     if (connectError) {
       console.error('Connection error:', connectError);
+      pendingAuthRef.current = false; // Clear pending auth on error
       if (connectError.message?.includes('rejected')) {
         setError('Connection rejected');
       } else {
@@ -60,7 +64,7 @@ export function ConnectWallet() {
     }
   }, [connectError]);
 
-  const handleAuthenticate = async () => {
+  const handleAuthenticate = useCallback(async () => {
     if (!address) return;
 
     setIsAuthenticating(true);
@@ -86,8 +90,26 @@ export function ConnectWallet() {
       setError(err.message || 'Authentication failed');
     } finally {
       setIsAuthenticating(false);
+      pendingAuthRef.current = false;
     }
-  };
+  }, [address, signMessageAsync, setSession]);
+
+  // Auto-authenticate after wallet connects on Polygon
+  // This enables single-step connect+sign flow
+  useEffect(() => {
+    if (
+      pendingAuthRef.current &&
+      isConnected &&
+      address &&
+      isOnPolygon &&
+      !isAuthenticated &&
+      !isAuthenticating &&
+      !isSwitching
+    ) {
+      console.log('[ConnectWallet] Auto-authenticating after connect...');
+      handleAuthenticate();
+    }
+  }, [isConnected, address, isOnPolygon, isAuthenticated, isAuthenticating, isSwitching, handleAuthenticate]);
 
   const handleLogout = async () => {
     if (token) {
@@ -108,7 +130,7 @@ export function ConnectWallet() {
         <div className="flex flex-col items-end gap-2">
           <button
             onClick={() => setShowModal(true)}
-            disabled={isConnecting}
+            disabled={isConnecting || isAuthenticating}
             className="
               px-5 py-2.5 bg-terminal-surface border border-neon-cyan/40
               rounded-lg text-neon-cyan text-sm font-mono font-semibold
@@ -119,6 +141,8 @@ export function ConnectWallet() {
           >
             {isConnecting ? (
               <span className="animate-pulse">CONNECTING...</span>
+            ) : isAuthenticating ? (
+              <span className="animate-pulse">SIGNING...</span>
             ) : (
               'CONNECT WALLET'
             )}
@@ -132,7 +156,12 @@ export function ConnectWallet() {
         {showModal && (
           <div
             className="fixed inset-0 bg-black/80 flex items-center justify-center z-50 p-4"
-            onClick={() => setShowModal(false)}
+            onClick={() => {
+              if (!isConnecting && !isAuthenticating && !isSwitching) {
+                pendingAuthRef.current = false;
+                setShowModal(false);
+              }
+            }}
           >
             <div
               className="bg-terminal-surface border border-terminal-border rounded-lg p-6 max-w-sm w-full"
@@ -141,12 +170,32 @@ export function ConnectWallet() {
               <div className="flex items-center justify-between mb-6">
                 <h3 className="text-white font-mono text-lg font-semibold">Connect Wallet</h3>
                 <button
-                  onClick={() => setShowModal(false)}
-                  className="text-terminal-muted hover:text-white text-xl"
+                  onClick={() => {
+                    if (!isConnecting && !isAuthenticating && !isSwitching) {
+                      pendingAuthRef.current = false;
+                      setShowModal(false);
+                    }
+                  }}
+                  className="text-terminal-muted hover:text-white text-xl disabled:opacity-50"
+                  disabled={isConnecting || isAuthenticating || isSwitching}
                 >
                   ×
                 </button>
               </div>
+
+              {/* Status indicator during connect/sign flow */}
+              {(isConnecting || isSwitching || isAuthenticating) && (
+                <div className="mb-4 p-3 bg-neon-cyan/10 border border-neon-cyan/30 rounded-lg">
+                  <div className="flex items-center gap-2">
+                    <div className="w-2 h-2 bg-neon-cyan rounded-full animate-pulse" />
+                    <span className="text-neon-cyan text-sm font-mono">
+                      {isConnecting && 'Connecting wallet...'}
+                      {isSwitching && 'Switching to Polygon...'}
+                      {isAuthenticating && 'Sign message in wallet...'}
+                    </span>
+                  </div>
+                </div>
+              )}
 
               <div className="space-y-3">
                 {connectors.map((connector) => {
@@ -158,9 +207,11 @@ export function ConnectWallet() {
                       key={connector.uid}
                       onClick={() => {
                         setError(null);
+                        // Set flag to auto-authenticate after connection completes
+                        pendingAuthRef.current = true;
                         connect({ connector });
                       }}
-                      disabled={isConnecting}
+                      disabled={isConnecting || isAuthenticating || isSwitching}
                       className={`
                         w-full flex items-center gap-4 p-4 rounded-lg border transition-all
                         border-terminal-border hover:border-neon-cyan hover:bg-neon-cyan/5
