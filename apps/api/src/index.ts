@@ -49,20 +49,23 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
-// Database - use host.docker.internal for WSL -> Docker Desktop connectivity
-const DB_HOST = process.env.DB_HOST || 'host.docker.internal';
-const db = new Pool({
-  host: DB_HOST,
-  port: parseInt(process.env.DB_PORT || '5432'),
-  user: process.env.DB_USER || 'huldah',
-  password: process.env.DB_PASSWORD || 'huldah',
-  database: process.env.DB_NAME || 'huldah'
-});
+// Database - supports DATABASE_URL (Railway/Heroku) or individual vars
+const db = process.env.DATABASE_URL
+  ? new Pool({ connectionString: process.env.DATABASE_URL, ssl: { rejectUnauthorized: false } })
+  : new Pool({
+      host: process.env.DB_HOST || 'host.docker.internal',
+      port: parseInt(process.env.DB_PORT || '5432'),
+      user: process.env.DB_USER || 'huldah',
+      password: process.env.DB_PASSWORD || 'huldah',
+      database: process.env.DB_NAME || 'huldah'
+    });
 
-// Redis - use host.docker.internal for WSL -> Docker Desktop connectivity
-const REDIS_HOST = process.env.REDIS_HOST || 'host.docker.internal';
-const redis = new Redis({ host: REDIS_HOST, port: 6379 });
-const redisSub = new Redis({ host: REDIS_HOST, port: 6379 });
+// Redis - supports REDIS_URL (Railway) or individual vars
+const redisConfig = process.env.REDIS_URL
+  ? process.env.REDIS_URL
+  : { host: process.env.REDIS_HOST || 'host.docker.internal', port: parseInt(process.env.REDIS_PORT || '6379') };
+const redis = new Redis(redisConfig as any);
+const redisSub = new Redis(redisConfig as any);
 
 // Services
 const walletScorer = new WalletScorer(db);

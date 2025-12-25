@@ -14,14 +14,16 @@ import { fileURLToPath } from 'url';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
-const DB_HOST = process.env.DB_HOST || 'host.docker.internal';
-const db = new Pool({
-  host: DB_HOST,
-  port: parseInt(process.env.DB_PORT || '5432'),
-  user: process.env.DB_USER || 'huldah',
-  password: process.env.DB_PASSWORD || 'huldah',
-  database: process.env.DB_NAME || 'huldah',
-});
+// Support DATABASE_URL (Railway/Heroku) or individual vars
+const db = process.env.DATABASE_URL
+  ? new Pool({ connectionString: process.env.DATABASE_URL, ssl: { rejectUnauthorized: false } })
+  : new Pool({
+      host: process.env.DB_HOST || 'host.docker.internal',
+      port: parseInt(process.env.DB_PORT || '5432'),
+      user: process.env.DB_USER || 'huldah',
+      password: process.env.DB_PASSWORD || 'huldah',
+      database: process.env.DB_NAME || 'huldah',
+    });
 
 async function runMigrations() {
   console.log('🗄️  Running database migrations...\n');

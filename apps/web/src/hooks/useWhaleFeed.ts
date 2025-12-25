@@ -1,7 +1,9 @@
 import { useEffect, useRef } from 'react';
 import { useAppStore } from '../stores/appStore';
 
-const WS_URL = 'ws://localhost:3001/ws';
+// Derive WebSocket URL from API URL (http -> ws, https -> wss)
+const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:3001';
+const WS_URL = API_URL.replace(/^http/, 'ws') + '/ws';
 
 export function useWhaleFeed() {
   const ws = useRef<WebSocket | null>(null);
