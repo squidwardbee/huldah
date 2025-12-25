@@ -11,17 +11,60 @@
  * 4. Sign orders in browser, submit directly to Polymarket CLOB
  */
 
-import { useState, useCallback, useEffect, useRef } from 'react';
+import { useState, useCallback, useEffect, useRef, useMemo } from 'react';
 import { useAccount, useChainId } from 'wagmi';
 import { switchChain, getChainId } from '@wagmi/core';
 import { wagmiConfig } from '../lib/wagmi';
 import { ethers } from 'ethers';
-import { ClobClient, Side, OrderType as ClobOrderType } from '@polymarket/clob-client';
+import { ClobClient, Side, OrderType as ClobOrderType, AssetType } from '@polymarket/clob-client';
+import { getCreate2Address, keccak256, encodeAbiParameters, type Hex } from 'viem';
 
 // Direct to Polymarket CLOB - no proxy
 const CLOB_API_URL = 'https://clob.polymarket.com';
 const CHAIN_ID = 137; // Polygon
 const CREDS_STORAGE_KEY = 'polymarket_api_creds';
+
+// Polymarket Safe wallet derivation constants
+// From @polymarket/builder-relayer-client
+const SAFE_FACTORY_ADDRESS = '0xaacfeea03eb1561c4e67d661e40682bd20e3541b' as Hex;
+const SAFE_INIT_CODE_HASH = '0x2bce2127ff07fb632d16c8347c4ebf501f4841168bed00d9e6ef715ddb6fcecf' as Hex;
+
+/**
+ * Derive the Polymarket Safe (proxy wallet) address from an EOA
+ * This is deterministic - same EOA always gets same Safe address
+ */
+function deriveSafeAddress(eoaAddress: string): string {
+  const salt = keccak256(
+    encodeAbiParameters(
+      [{ name: 'address', type: 'address' }],
+      [eoaAddress as Hex]
+    )
+  );
+
+  return getCreate2Address({
+    bytecodeHash: SAFE_INIT_CODE_HASH,
+    from: SAFE_FACTORY_ADDRESS,
+    salt,
+  });
+}
+
+// Geoblock check
+interface GeoblockResponse {
+  blocked: boolean;
+  ip: string;
+  country: string;
+  region: string;
+}
+
+async function checkGeoblock(): Promise<GeoblockResponse | null> {
+  try {
+    const response = await fetch('https://polymarket.com/api/geoblock');
+    return response.json();
+  } catch (err) {
+    console.error('[Geoblock] Failed to check:', err);
+    return null;
+  }
+}
 
 export interface OrderParams {
   tokenId: string;
@@ -43,7 +86,16 @@ interface StoredCredentials {
   secret: string;
   passphrase: string;
   address: string;
+  signatureType?: number; // 0=EOA, 1=POLY_PROXY, 2=GNOSIS_SAFE
+  funder?: string; // Proxy wallet address if using signature type 1 or 2
 }
+
+// Signature types per Polymarket docs
+const SIGNATURE_TYPE = {
+  EOA: 0,           // Standard wallet, funds in EOA itself
+  POLY_PROXY: 1,    // Magic Link users
+  GNOSIS_SAFE: 2,   // Users who have deposited via polymarket.com (most common)
+} as const;
 
 export function useWalletTrading() {
   const { address, isConnected, connector } = useAccount();
@@ -54,9 +106,40 @@ export function useWalletTrading() {
   const [error, setError] = useState<string | null>(null);
   const [isReady, setIsReady] = useState(false);
   const [hasCredentials, setHasCredentials] = useState(false);
+  const [geoblock, setGeoblock] = useState<GeoblockResponse | null>(null);
+  const [balance, setBalance] = useState<string | null>(null);
+  const [allowance, setAllowance] = useState<string | null>(null);
 
   // CLOB client ref
   const clobClientRef = useRef<ClobClient | null>(null);
+
+  // Derive the Safe (proxy wallet) address from the EOA
+  // This is where the user's Polymarket funds are held
+  const proxyWallet = useMemo(() => {
+    if (!address) return null;
+    try {
+      const derived = deriveSafeAddress(address);
+      console.log('[useWalletTrading] Derived Safe address:', derived, 'from EOA:', address);
+      return derived;
+    } catch (err) {
+      console.error('[useWalletTrading] Failed to derive Safe address:', err);
+      return null;
+    }
+  }, [address]);
+
+  // Check geoblock on mount
+  useEffect(() => {
+    checkGeoblock().then(result => {
+      if (result) {
+        setGeoblock(result);
+        if (result.blocked) {
+          console.warn(`[useWalletTrading] Geoblocked: ${result.country}/${result.region} (IP: ${result.ip})`);
+        } else {
+          console.log(`[useWalletTrading] Geoblock OK: ${result.country} (IP: ${result.ip})`);
+        }
+      }
+    });
+  }, []);
 
   // Check if on correct chain
   const isOnPolygon = chainId === CHAIN_ID;
@@ -107,6 +190,12 @@ export function useWalletTrading() {
       return true;
     }
 
+    // Check geoblock
+    if (geoblock?.blocked) {
+      setError(`Trading blocked in ${geoblock.country}. Use a VPN in a supported region.`);
+      return false;
+    }
+
     setIsInitializing(true);
     setError(null);
 
@@ -146,10 +235,18 @@ export function useWalletTrading() {
       if (cached) {
         const creds: StoredCredentials = JSON.parse(cached);
         if (creds.address.toLowerCase() === address.toLowerCase()) {
-          console.log('[useWalletTrading] Using cached credentials');
+          // Always use GNOSIS_SAFE signature type with derived proxy wallet
+          // This is how Polymarket works - funds are in the Safe, not the EOA
+          const signatureType = SIGNATURE_TYPE.GNOSIS_SAFE;
+          const funder = proxyWallet;
+
+          console.log('[useWalletTrading] Using cached credentials with Safe wallet', {
+            signatureType,
+            funder,
+            eoa: address,
+          });
 
           // Create client with cached credentials
-          // signatureType 0 = EOA (direct wallet)
           clobClientRef.current = new ClobClient(
             CLOB_API_URL,
             CHAIN_ID,
@@ -159,7 +256,8 @@ export function useWalletTrading() {
               secret: creds.secret,
               passphrase: creds.passphrase,
             },
-            0 // EOA signature type
+            signatureType,
+            funder ?? undefined // Safe wallet where Polymarket funds are held
           );
 
           setHasCredentials(true);
@@ -187,19 +285,31 @@ export function useWalletTrading() {
 
       console.log('[useWalletTrading] Credentials derived, caching in localStorage...');
 
+      // Always use GNOSIS_SAFE with derived proxy wallet
+      // Polymarket deposits go to the Safe, so that's where funds are
+      const signatureType = SIGNATURE_TYPE.GNOSIS_SAFE;
+
       // Cache credentials in localStorage (browser only)
       const credsToStore: StoredCredentials = {
         key: derivedCreds.key,
         secret: derivedCreds.secret,
         passphrase: derivedCreds.passphrase,
         address: address,
+        signatureType,
+        funder: proxyWallet || undefined,
       };
       localStorage.setItem(
         `${CREDS_STORAGE_KEY}_${address.toLowerCase()}`,
         JSON.stringify(credsToStore)
       );
 
-      // Create full client with credentials
+      console.log('[useWalletTrading] Creating CLOB client with Safe wallet', {
+        signatureType,
+        funder: proxyWallet,
+        eoa: address,
+      });
+
+      // Create full client with credentials - using Safe wallet as funder
       clobClientRef.current = new ClobClient(
         CLOB_API_URL,
         CHAIN_ID,
@@ -209,7 +319,8 @@ export function useWalletTrading() {
           secret: derivedCreds.secret,
           passphrase: derivedCreds.passphrase,
         },
-        0 // EOA signature type
+        signatureType,
+        proxyWallet || undefined // Safe wallet where Polymarket funds are held
       );
 
       setHasCredentials(true);
@@ -225,6 +336,8 @@ export function useWalletTrading() {
         errorMsg = 'Signature rejected. Please sign to enable trading.';
       } else if (errorMsg.includes('network') || errorMsg.includes('Network')) {
         errorMsg = 'Network error. Check your connection.';
+      } else if (errorMsg.includes('403')) {
+        errorMsg = 'Access denied (403). Try a different VPN server or clear credentials.';
       }
 
       setError(errorMsg);
@@ -234,7 +347,7 @@ export function useWalletTrading() {
     } finally {
       setIsInitializing(false);
     }
-  }, [connector, address, isReady]);
+  }, [connector, address, isReady, geoblock, proxyWallet]);
 
   /**
    * Place an order - signs in browser, submits directly to Polymarket
@@ -311,6 +424,12 @@ export function useWalletTrading() {
 
       let errorMessage = err.message || 'Unknown error';
 
+      // Log full error for debugging
+      if (err.response) {
+        console.error('[useWalletTrading] Response status:', err.response.status);
+        console.error('[useWalletTrading] Response data:', err.response.data);
+      }
+
       // Make errors more user-friendly
       if (errorMessage.includes('insufficient') || errorMessage.includes('Insufficient')) {
         errorMessage = 'Insufficient balance. Deposit USDC to your Polymarket account.';
@@ -320,6 +439,12 @@ export function useWalletTrading() {
         errorMessage = 'Token not approved. Enable trading on polymarket.com first.';
       } else if (errorMessage.includes('CORS') || errorMessage.includes('Failed to fetch')) {
         errorMessage = 'Connection blocked. Try using a VPN or check your network.';
+      } else if (errorMessage.includes('403') || err.response?.status === 403) {
+        errorMessage = 'Access denied (403). Try: 1) Different VPN server 2) Clear credentials [RESET] 3) Ensure wallet is set up on polymarket.com';
+      } else if (errorMessage.includes('L2_AUTH') || errorMessage.includes('INVALID_SIGNATURE')) {
+        errorMessage = 'Auth error. Clear credentials [RESET] and re-sign.';
+      } else if (errorMessage.includes('balance') || errorMessage.includes('allowance')) {
+        errorMessage = `Insufficient balance or allowance. Deposit USDC at polymarket.com. Your Safe: ${proxyWallet?.slice(0, 10)}...`;
       }
 
       setError(errorMessage);
@@ -327,7 +452,7 @@ export function useWalletTrading() {
     } finally {
       setIsLoading(false);
     }
-  }, [isConnected, address, isReady, error, initializeClient]);
+  }, [isConnected, address, isReady, error, initializeClient, proxyWallet]);
 
   /**
    * Cancel an order
@@ -370,6 +495,43 @@ export function useWalletTrading() {
   }, [isReady]);
 
   /**
+   * Get USDC balance and allowance
+   */
+  const refreshBalance = useCallback(async () => {
+    try {
+      if (!clobClientRef.current || !isReady) {
+        console.log('[useWalletTrading] Cannot get balance - client not ready');
+        return null;
+      }
+
+      console.log('[useWalletTrading] Fetching balance...');
+      const result = await clobClientRef.current.getBalanceAllowance({
+        asset_type: AssetType.COLLATERAL, // USDC
+      });
+
+      console.log('[useWalletTrading] Balance result:', result);
+      setBalance(result.balance);
+      setAllowance(result.allowance);
+
+      return result;
+    } catch (err: any) {
+      console.error('[useWalletTrading] Failed to get balance:', err);
+      // Log more details
+      if (err.response) {
+        console.error('[useWalletTrading] Response:', err.response.status, err.response.data);
+      }
+      return null;
+    }
+  }, [isReady]);
+
+  // Auto-refresh balance when client becomes ready
+  useEffect(() => {
+    if (isReady && clobClientRef.current) {
+      refreshBalance();
+    }
+  }, [isReady, refreshBalance]);
+
+  /**
    * Clear credentials (for switching accounts)
    */
   const clearCredentials = useCallback(() => {
@@ -391,7 +553,11 @@ export function useWalletTrading() {
     isReady,
     hasCredentials,
     isOnPolygon,
+    geoblock, // null = checking, { blocked: true/false, country, ip }
     chainId,
+    proxyWallet, // The user's Polymarket Safe wallet (auto-derived from EOA)
+    balance, // USDC balance (null until fetched)
+    allowance, // USDC allowance (null until fetched)
 
     // Actions
     initializeClient,
@@ -399,6 +565,7 @@ export function useWalletTrading() {
     cancelOrder,
     getOpenOrders,
     clearCredentials,
+    refreshBalance,
   };
 }
 

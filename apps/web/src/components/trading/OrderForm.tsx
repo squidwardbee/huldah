@@ -442,6 +442,52 @@ export function OrderForm({
           </div>
         </div>
 
+        {/* Geoblock Warning */}
+        {tradingMethod === 'WALLET' && walletTrading.geoblock?.blocked && (
+          <div className="bg-neon-red/10 border border-neon-red/30 rounded-lg p-3 text-sm">
+            <div className="text-neon-red font-mono text-xs mb-1">REGION BLOCKED</div>
+            <div className="text-terminal-muted text-xs">
+              Trading blocked in {walletTrading.geoblock.country}. Use a VPN in a supported region.
+            </div>
+            <div className="text-terminal-muted text-xs mt-1 opacity-60">
+              IP: {walletTrading.geoblock.ip}
+            </div>
+          </div>
+        )}
+
+        {/* Geoblock OK indicator */}
+        {tradingMethod === 'WALLET' && walletTrading.geoblock && !walletTrading.geoblock.blocked && (
+          <div className="text-xs text-terminal-muted opacity-60 font-mono">
+            Region: {walletTrading.geoblock.country} (OK)
+          </div>
+        )}
+
+        {/* Show derived Safe wallet and balance */}
+        {tradingMethod === 'WALLET' && walletTrading.proxyWallet && (
+          <div className="bg-terminal-bg rounded-lg p-2 space-y-1">
+            <div className="text-xs text-terminal-muted font-mono flex justify-between">
+              <span>Safe:</span>
+              <span>{walletTrading.proxyWallet.slice(0, 6)}...{walletTrading.proxyWallet.slice(-4)}</span>
+            </div>
+            <div className="text-xs font-mono flex justify-between">
+              <span className="text-terminal-muted">Balance:</span>
+              <span className={walletTrading.balance ? 'text-neon-green' : 'text-terminal-muted'}>
+                {walletTrading.balance
+                  ? `$${(parseFloat(walletTrading.balance) / 1e6).toFixed(2)} USDC`
+                  : walletTrading.isReady ? 'Loading...' : '-'}
+              </span>
+            </div>
+            <div className="text-xs font-mono flex justify-between">
+              <span className="text-terminal-muted">Allowance:</span>
+              <span className={walletTrading.allowance && parseFloat(walletTrading.allowance) > 0 ? 'text-neon-green' : 'text-neon-red'}>
+                {walletTrading.allowance
+                  ? parseFloat(walletTrading.allowance) > 1e12 ? 'Unlimited' : `$${(parseFloat(walletTrading.allowance) / 1e6).toFixed(2)}`
+                  : walletTrading.isReady ? 'Loading...' : '-'}
+              </span>
+            </div>
+          </div>
+        )}
+
         {/* Network Warning */}
         {tradingMethod === 'WALLET' && isConnected && !walletTrading.isOnPolygon && (
           <div className="bg-neon-amber/10 border border-neon-amber/30 rounded-lg p-3 text-sm">
@@ -461,11 +507,28 @@ export function OrderForm({
               : 'bg-neon-cyan/10 border-neon-cyan/30'
             }
           `}>
-            <div className={`font-mono text-xs mb-1 ${walletTrading.isReady ? 'text-neon-green' : 'text-neon-cyan'}`}>
-              {walletTrading.isReady ? 'READY TO TRADE' :
-               walletTrading.hasCredentials ? 'INITIALIZING...' : 'SIGN TO ENABLE TRADING'}
+            <div className="flex items-center justify-between">
+              <div className={`font-mono text-xs ${walletTrading.isReady ? 'text-neon-green' : 'text-neon-cyan'}`}>
+                {walletTrading.isReady ? 'READY TO TRADE' :
+                 walletTrading.hasCredentials ? 'INITIALIZING...' : 'SIGN TO ENABLE TRADING'}
+              </div>
+              {walletTrading.hasCredentials && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    walletTrading.clearCredentials();
+                    setError(null);
+                    setSuccess('Credentials cleared. Sign again on next trade.');
+                    setTimeout(() => setSuccess(null), 3000);
+                  }}
+                  className="text-terminal-muted hover:text-neon-amber text-xs font-mono transition-colors"
+                  title="Clear stored credentials and re-derive"
+                >
+                  [RESET]
+                </button>
+              )}
             </div>
-            <div className="text-terminal-muted text-xs">
+            <div className="text-terminal-muted text-xs mt-1">
               {walletTrading.isReady
                 ? 'Connected. Orders signed locally and sent directly to Polymarket.'
                 : 'First trade will prompt a signature to derive your trading credentials.'}
