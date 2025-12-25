@@ -198,6 +198,8 @@ export class OnChainExecutor {
 
     try {
       const hash = await this.walletClient!.writeContract({
+        chain: polygon,
+        account: this.account!,
         address: POLYGON_CONTRACTS.USDC as Hex,
         abi: ERC20_ABI,
         functionName: 'approve',
@@ -238,6 +240,8 @@ export class OnChainExecutor {
       const amountWei = parseUnits(amount.toString(), 6);
 
       const hash = await this.walletClient!.writeContract({
+        chain: polygon,
+        account: this.account!,
         address: POLYGON_CONTRACTS.USDC as Hex,
         abi: ERC20_ABI,
         functionName: 'transfer',
@@ -279,6 +283,8 @@ export class OnChainExecutor {
 
     try {
       const hash = await this.walletClient!.sendTransaction({
+        chain: polygon,
+        account: this.account!,
         to: to as Hex,
         data: data as Hex,
         value: BigInt(value),

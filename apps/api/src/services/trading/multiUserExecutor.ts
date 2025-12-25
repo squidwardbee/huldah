@@ -338,7 +338,7 @@ export class MultiUserExecutor {
         side,
         size: request.size,
       }, {
-        tickSize: request.tickSize || '0.01',
+        tickSize: (request.tickSize || '0.01') as '0.1' | '0.01' | '0.001' | '0.0001',
         negRisk: request.negRisk || false,
       });
 

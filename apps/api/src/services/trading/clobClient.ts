@@ -63,7 +63,7 @@ export class TradingClobClient {
         this.signer
       );
 
-      this.userCreds = await tempClient.createOrDeriveApiCreds();
+      this.userCreds = await tempClient.createOrDeriveApiKey();
       console.log('[CLOB] API credentials derived');
 
       // Create builder config for order attribution
@@ -80,7 +80,7 @@ export class TradingClobClient {
         this.config.clobUrl,
         this.config.chainId,
         this.signer,
-        this.userCreds,
+        this.userCreds ?? undefined,
         this.config.signatureType,
         this.config.funderAddress,
         undefined,
@@ -192,7 +192,7 @@ export class TradingClobClient {
         side,
         size: request.size,
       }, {
-        tickSize: request.tickSize || '0.01',
+        tickSize: (request.tickSize || '0.01') as '0.1' | '0.01' | '0.001' | '0.0001',
         negRisk: request.negRisk || false,
       });
 
@@ -233,7 +233,8 @@ export class TradingClobClient {
     attempt = 0
   ): Promise<{ success: boolean; transactionsHashes?: string[]; errorMsg?: string }> {
     try {
-      const response = await this.clobClient!.postOrder(order, orderType);
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const response = await this.clobClient!.postOrder(order as any, orderType);
       return response;
     } catch (error) {
       if (attempt < this.retryConfig.maxRetries) {

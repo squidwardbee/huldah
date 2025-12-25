@@ -532,7 +532,7 @@ app.post('/api/trading/order', async (req, res) => {
 app.all('/api/clob/*', async (req, res) => {
   try {
     // Extract the path after /api/clob
-    const clobPath = req.params[0] || '';
+    const clobPath = (req.params as Record<string, string>)[0] || '';
     const url = `https://clob.polymarket.com/${clobPath}`;
 
     console.log(`[CLOB Proxy] ${req.method} ${clobPath}`);
@@ -1049,7 +1049,12 @@ app.get('/api/platform/stats', async (_req, res) => {
     }
     
     // Get executor status (may fail if not initialized)
-    let executorStatus = { initialized: false, platformRateLimit: null, activeUsers: 0 };
+    let executorStatus: {
+      initialized: boolean;
+      tradingEnabled?: boolean;
+      platformRateLimit: { dailyLimit: number; used: number; remaining: number; resetAt: Date } | null;
+      activeUsers: number;
+    } = { initialized: false, platformRateLimit: null, activeUsers: 0 };
     try {
       const executor = await getMultiUserExecutor();
       executorStatus = await executor.getStatus();
