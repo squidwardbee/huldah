@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react';
 import { useAccount } from 'wagmi';
 import { useWalletTrading } from '../../hooks/useWalletTrading';
 import { useDirectTrading } from '../../hooks/useDirectTrading';
+import { useBackendTrading } from '../../hooks/useBackendTrading';
 import { DirectCredentialsForm } from './DirectCredentialsForm';
 
 interface OrderFormProps {
@@ -17,7 +18,7 @@ interface OrderFormProps {
 }
 
 type OrderMode = 'LIMIT' | 'MARKET';
-type TradingMethod = 'WALLET' | 'API';
+type TradingMethod = 'SERVER' | 'WALLET' | 'API';
 type OutcomeToken = 'YES' | 'NO';
 
 export function OrderForm({
@@ -33,10 +34,13 @@ export function OrderForm({
 }: OrderFormProps) {
   const { isConnected } = useAccount();
 
-  // Primary method: Wallet-based signing (like native Polymarket)
+  // Primary method: Wallet-based signing, relayed through backend (native Polymarket experience)
   const walletTrading = useWalletTrading();
 
-  // Fallback method: API credentials
+  // Alternative: Backend server credentials
+  const serverTrading = useBackendTrading();
+
+  // Alternative: Direct API credentials (may have CORS issues)
   const apiTrading = useDirectTrading();
 
   const [tradingMethod, setTradingMethod] = useState<TradingMethod>('WALLET');
@@ -96,7 +100,11 @@ export function OrderForm({
     : sizeNum * priceNum;
 
   // Get current trading state based on method
-  const currentTrading = tradingMethod === 'WALLET' ? walletTrading : apiTrading;
+  const currentTrading = tradingMethod === 'WALLET'
+    ? walletTrading
+    : tradingMethod === 'SERVER'
+      ? serverTrading
+      : apiTrading;
   const isTradeLoading = currentTrading.isLoading || (tradingMethod === 'WALLET' && walletTrading.isInitializing);
   const tradeError = currentTrading.error;
 
@@ -187,9 +195,22 @@ export function OrderForm({
                   : 'text-terminal-muted hover:text-white'
                 }
               `}
-              title="Sign orders with your wallet (native Polymarket method)"
+              title="Sign with wallet (recommended)"
             >
               WALLET
+            </button>
+            <button
+              onClick={() => setTradingMethod('SERVER')}
+              className={`
+                px-2 py-0.5 text-xs font-mono rounded transition-all
+                ${tradingMethod === 'SERVER'
+                  ? 'bg-neon-amber/20 text-neon-amber'
+                  : 'text-terminal-muted hover:text-white'
+                }
+              `}
+              title="Use server-stored credentials"
+            >
+              SERVER
             </button>
             <button
               onClick={() => setTradingMethod('API')}
@@ -200,7 +221,7 @@ export function OrderForm({
                   : 'text-terminal-muted hover:text-white'
                 }
               `}
-              title="Use API credentials for trading"
+              title="Use local API credentials"
             >
               API
             </button>
@@ -421,19 +442,8 @@ export function OrderForm({
           </div>
         </div>
 
-        {/* Geoblock Warning */}
-        {walletTrading.isGeoblocked && (
-          <div className="bg-neon-red/10 border border-neon-red/30 rounded-lg p-3 text-sm">
-            <div className="text-neon-red font-mono text-xs mb-1">REGION RESTRICTED</div>
-            <div className="text-terminal-muted text-xs">
-              Trading is not available in {walletTrading.geoblockCountry || 'your region'}.
-              Polymarket restricts access from certain locations due to regulatory requirements.
-            </div>
-          </div>
-        )}
-
         {/* Network Warning */}
-        {tradingMethod === 'WALLET' && isConnected && !walletTrading.isOnPolygon && !walletTrading.isGeoblocked && (
+        {tradingMethod === 'WALLET' && isConnected && !walletTrading.isOnPolygon && (
           <div className="bg-neon-amber/10 border border-neon-amber/30 rounded-lg p-3 text-sm">
             <div className="text-neon-amber font-mono text-xs mb-1">WRONG NETWORK</div>
             <div className="text-terminal-muted text-xs">
@@ -443,12 +453,22 @@ export function OrderForm({
         )}
 
         {/* Wallet Method Info */}
-        {tradingMethod === 'WALLET' && !walletTrading.isReady && isConnected && walletTrading.isOnPolygon && !walletTrading.isGeoblocked && (
-          <div className="bg-neon-green/10 border border-neon-green/30 rounded-lg p-3 text-sm">
-            <div className="text-neon-green font-mono text-xs mb-1">WALLET SIGNING</div>
+        {tradingMethod === 'WALLET' && isConnected && walletTrading.isOnPolygon && (
+          <div className={`
+            rounded-lg p-3 text-sm border
+            ${walletTrading.isReady
+              ? 'bg-neon-green/10 border-neon-green/30'
+              : 'bg-neon-cyan/10 border-neon-cyan/30'
+            }
+          `}>
+            <div className={`font-mono text-xs mb-1 ${walletTrading.isReady ? 'text-neon-green' : 'text-neon-cyan'}`}>
+              {walletTrading.isReady ? 'READY TO TRADE' :
+               walletTrading.hasCredentials ? 'INITIALIZING...' : 'SIGN TO ENABLE TRADING'}
+            </div>
             <div className="text-terminal-muted text-xs">
-              Your first trade will prompt a signature to enable trading.
-              This is the native Polymarket method - no API keys needed.
+              {walletTrading.isReady
+                ? 'Connected. Orders signed locally and sent directly to Polymarket.'
+                : 'First trade will prompt a signature to derive your trading credentials.'}
             </div>
           </div>
         )}
@@ -486,14 +506,6 @@ export function OrderForm({
           >
             SET UP API CREDENTIALS
           </button>
-        ) : walletTrading.isGeoblocked ? (
-          <button
-            type="button"
-            disabled
-            className="w-full py-4 rounded-lg font-mono font-bold text-sm bg-neon-red/20 text-neon-red opacity-50 cursor-not-allowed"
-          >
-            TRADING UNAVAILABLE IN YOUR REGION
-          </button>
         ) : (
           <button
             type="submit"
@@ -512,7 +524,7 @@ export function OrderForm({
           >
             {isProcessing ? (
               <span className="animate-pulse">
-                {walletTrading.isInitializing ? 'SIGNING...' : 'PLACING ORDER...'}
+                {walletTrading.isInitializing ? 'ENABLING TRADING...' : 'PLACING ORDER...'}
               </span>
             ) : marketOrderBlockedReason ? (
               marketOrderBlockedReason

@@ -1,13 +1,14 @@
 /**
  * Wallet-Based Polymarket Trading Hook
  *
- * Signs orders directly with the user's connected wallet (MetaMask, etc.)
- * This is the native Polymarket approach - no API credentials needed.
+ * Client-side signing with direct submission to Polymarket CLOB.
+ * No credentials stored on server - everything stays in browser.
  *
  * Flow:
  * 1. User connects wallet via wagmi
- * 2. On first trade, derive API credentials from wallet signature
- * 3. Sign orders with wallet, submit to CLOB API
+ * 2. Derive API credentials from wallet signature (one-time)
+ * 3. Store credentials in localStorage (browser only)
+ * 4. Sign orders in browser, submit directly to Polymarket CLOB
  */
 
 import { useState, useCallback, useEffect, useRef } from 'react';
@@ -15,44 +16,12 @@ import { useAccount, useChainId } from 'wagmi';
 import { switchChain, getChainId } from '@wagmi/core';
 import { wagmiConfig } from '../lib/wagmi';
 import { ethers } from 'ethers';
-import {
-  ClobClient,
-  Side,
-  OrderType as ClobOrderType,
-} from '@polymarket/clob-client';
+import { ClobClient, Side, OrderType as ClobOrderType } from '@polymarket/clob-client';
 
+// Direct to Polymarket CLOB - no proxy
 const CLOB_API_URL = 'https://clob.polymarket.com';
 const CHAIN_ID = 137; // Polygon
-const CREDS_STORAGE_KEY = 'polymarket_derived_creds';
-const GEOBLOCK_API_URL = 'https://polymarket.com/api/geoblock';
-
-interface GeoblockResponse {
-  blocked: boolean;
-  ip: string;
-  country: string;
-  region: string;
-}
-
-// Check if user is in a blocked region
-async function checkGeoblock(): Promise<{ blocked: boolean; country?: string; region?: string }> {
-  try {
-    const response = await fetch(GEOBLOCK_API_URL);
-    if (!response.ok) {
-      console.warn('[Geoblock] Failed to check geoblock status');
-      return { blocked: false }; // Allow attempt if check fails
-    }
-    const data: GeoblockResponse = await response.json();
-    console.log('[Geoblock] Check result:', data);
-    return {
-      blocked: data.blocked,
-      country: data.country,
-      region: data.region,
-    };
-  } catch (err) {
-    console.warn('[Geoblock] Error checking geoblock:', err);
-    return { blocked: false }; // Allow attempt if check fails
-  }
-}
+const CREDS_STORAGE_KEY = 'polymarket_api_creds';
 
 export interface OrderParams {
   tokenId: string;
@@ -69,7 +38,7 @@ export interface OrderResult {
   errorMessage?: string;
 }
 
-interface DerivedCredentials {
+interface StoredCredentials {
   key: string;
   secret: string;
   passphrase: string;
@@ -84,26 +53,13 @@ export function useWalletTrading() {
   const [isInitializing, setIsInitializing] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [isReady, setIsReady] = useState(false);
-  const [isGeoblocked, setIsGeoblocked] = useState<boolean | null>(null);
-  const [geoblockCountry, setGeoblockCountry] = useState<string | null>(null);
+  const [hasCredentials, setHasCredentials] = useState(false);
+
+  // CLOB client ref
+  const clobClientRef = useRef<ClobClient | null>(null);
 
   // Check if on correct chain
   const isOnPolygon = chainId === CHAIN_ID;
-
-  // Check geoblock status on mount
-  useEffect(() => {
-    checkGeoblock().then(result => {
-      setIsGeoblocked(result.blocked);
-      if (result.blocked) {
-        setGeoblockCountry(result.country || 'Unknown');
-        setError(`Trading is not available in ${result.country || 'your region'}. Polymarket restricts access from certain locations.`);
-      }
-    });
-  }, []);
-
-  // Store derived credentials (persisted per address)
-  const [credentials, setCredentials] = useState<DerivedCredentials | null>(null);
-  const clobClientRef = useRef<ClobClient | null>(null);
 
   // Load cached credentials on mount/address change
   useEffect(() => {
@@ -111,34 +67,34 @@ export function useWalletTrading() {
       const cached = localStorage.getItem(`${CREDS_STORAGE_KEY}_${address.toLowerCase()}`);
       if (cached) {
         try {
-          const creds: DerivedCredentials = JSON.parse(cached);
+          const creds: StoredCredentials = JSON.parse(cached);
           if (creds.address.toLowerCase() === address.toLowerCase()) {
-            setCredentials(creds);
-            console.log('[useWalletTrading] Loaded cached credentials for', address);
+            setHasCredentials(true);
+            console.log('[useWalletTrading] Found cached credentials for', address);
           }
         } catch (e) {
           console.error('[useWalletTrading] Failed to parse cached credentials');
         }
+      } else {
+        setHasCredentials(false);
       }
     } else {
-      setCredentials(null);
+      setHasCredentials(false);
       clobClientRef.current = null;
       setIsReady(false);
     }
   }, [address]);
 
-  // Clear error when wallet reconnects or connector changes
+  // Clear error when wallet reconnects
   useEffect(() => {
     if (connector && address && error) {
-      // Wallet is connected - clear the error to allow retry
       setError(null);
-      console.log('[useWalletTrading] Wallet reconnected, clearing error');
     }
   }, [connector, address, error]);
 
   /**
    * Initialize CLOB client with wallet signer
-   * This derives API credentials from a wallet signature on first use
+   * Derives API credentials from wallet signature on first use
    */
   const initializeClient = useCallback(async (): Promise<boolean> => {
     if (!connector || !address) {
@@ -146,7 +102,7 @@ export function useWalletTrading() {
       return false;
     }
 
-    // If we already have a ready client, use it
+    // Already initialized
     if (clobClientRef.current && isReady) {
       return true;
     }
@@ -155,175 +111,133 @@ export function useWalletTrading() {
     setError(null);
 
     try {
-      // Check geoblock first
-      if (isGeoblocked) {
-        throw new Error(`Trading is not available in ${geoblockCountry || 'your region'}. Polymarket restricts access from certain locations.`);
-      }
-
-      // Re-check geoblock if not yet checked
-      if (isGeoblocked === null) {
-        const geoResult = await checkGeoblock();
-        setIsGeoblocked(geoResult.blocked);
-        if (geoResult.blocked) {
-          setGeoblockCountry(geoResult.country || 'Unknown');
-          throw new Error(`Trading is not available in ${geoResult.country || 'your region'}. Polymarket restricts access from certain locations.`);
-        }
-      }
-
-      // Check current chain and switch if needed
+      // Ensure on Polygon
       const currentChain = getChainId(wagmiConfig);
-      console.log('[useWalletTrading] Current chain:', currentChain, 'Need:', CHAIN_ID);
-
       if (currentChain !== CHAIN_ID) {
         console.log('[useWalletTrading] Switching to Polygon...');
-        try {
-          await switchChain(wagmiConfig, { chainId: CHAIN_ID });
-          console.log('[useWalletTrading] Switch initiated, waiting for confirmation...');
+        await switchChain(wagmiConfig, { chainId: CHAIN_ID });
 
-          // Wait for chain to actually switch (poll for up to 5 seconds)
-          let attempts = 0;
-          while (attempts < 10) {
-            await new Promise(resolve => setTimeout(resolve, 500));
-            const newChain = getChainId(wagmiConfig);
-            if (newChain === CHAIN_ID) {
-              console.log('[useWalletTrading] Chain switch confirmed!');
-              break;
-            }
-            attempts++;
-          }
+        // Wait for chain switch
+        let attempts = 0;
+        while (attempts < 10) {
+          await new Promise(resolve => setTimeout(resolve, 500));
+          if (getChainId(wagmiConfig) === CHAIN_ID) break;
+          attempts++;
+        }
 
-          const finalChain = getChainId(wagmiConfig);
-          if (finalChain !== CHAIN_ID) {
-            throw new Error(`Chain switch incomplete. Expected ${CHAIN_ID}, got ${finalChain}`);
-          }
-        } catch (switchError: any) {
-          console.error('[useWalletTrading] Chain switch failed:', switchError);
-          if (switchError.message?.includes('rejected') || switchError.message?.includes('denied')) {
-            throw new Error('Network switch rejected. Please approve in your wallet.');
-          }
-          throw new Error('Please switch to Polygon network manually in your wallet');
+        if (getChainId(wagmiConfig) !== CHAIN_ID) {
+          throw new Error('Please switch to Polygon network');
         }
       }
 
-      // Get the EIP-1193 provider from the connector
-      console.log('[useWalletTrading] Getting provider from connector:', connector.name);
+      // Get wallet signer
+      console.log('[useWalletTrading] Getting provider from connector...');
       const provider = await connector.getProvider();
-      console.log('[useWalletTrading] Got provider:', !!provider);
-
       if (!provider) {
         throw new Error('Failed to get wallet provider');
       }
 
-      // Create signer from the provider using ethers Web3Provider
-      console.log('[useWalletTrading] Creating signer...');
       const web3Provider = new ethers.providers.Web3Provider(provider as any);
       const signer = web3Provider.getSigner();
-      console.log('[useWalletTrading] Signer created:', !!signer);
 
-      // Check if we have cached credentials for this address
-      if (credentials && credentials.address.toLowerCase() === address.toLowerCase()) {
-        // Use cached credentials
-        // ClobClient(host, chainId, signer, creds, signatureType)
-        // signatureType 0 = Browser Wallet (MetaMask, etc)
-        clobClientRef.current = new ClobClient(
-          CLOB_API_URL,
-          CHAIN_ID,
-          signer,
-          {
-            key: credentials.key,
-            secret: credentials.secret,
-            passphrase: credentials.passphrase,
-          },
-          0 // Browser wallet signature type
-        );
-        setIsReady(true);
-        console.log('[useWalletTrading] Initialized with cached credentials');
-        return true;
+      // Check for cached credentials
+      const cached = localStorage.getItem(`${CREDS_STORAGE_KEY}_${address.toLowerCase()}`);
+
+      if (cached) {
+        const creds: StoredCredentials = JSON.parse(cached);
+        if (creds.address.toLowerCase() === address.toLowerCase()) {
+          console.log('[useWalletTrading] Using cached credentials');
+
+          // Create client with cached credentials
+          // signatureType 0 = EOA (direct wallet)
+          clobClientRef.current = new ClobClient(
+            CLOB_API_URL,
+            CHAIN_ID,
+            signer,
+            {
+              key: creds.key,
+              secret: creds.secret,
+              passphrase: creds.passphrase,
+            },
+            0 // EOA signature type
+          );
+
+          setHasCredentials(true);
+          setIsReady(true);
+          return true;
+        }
       }
 
-      // First time - need to derive credentials from wallet signature
-      console.log('[useWalletTrading] Deriving new API credentials from wallet...');
-      console.log('[useWalletTrading] Creating temp CLOB client...');
+      // No cached credentials - derive new ones
+      console.log('[useWalletTrading] Deriving API credentials (will prompt signature)...');
 
-      // ClobClient(host, chainId, signer, creds, signatureType)
+      // Create temp client without credentials
       const tempClient = new ClobClient(
         CLOB_API_URL,
         CHAIN_ID,
-        signer,
-        undefined, // no creds yet
-        0 // Browser wallet signature type
+        signer
       );
-      console.log('[useWalletTrading] Temp client created, calling createOrDeriveApiKey...');
 
-      // This will prompt the user to sign a message to derive API credentials
-      const derivedApiCreds = await tempClient.createOrDeriveApiKey();
-      console.log('[useWalletTrading] Got credentials response:', !!derivedApiCreds, derivedApiCreds ? Object.keys(derivedApiCreds) : 'null');
+      // This prompts user to sign a message to derive API credentials
+      const derivedCreds = await tempClient.createOrDeriveApiKey();
 
-      if (!derivedApiCreds || !derivedApiCreds.key) {
-        throw new Error('Failed to derive API credentials - empty response from CLOB API');
+      if (!derivedCreds || !derivedCreds.key) {
+        throw new Error('Failed to derive API credentials');
       }
 
-      // Cache the credentials
-      const derivedCreds: DerivedCredentials = {
-        key: derivedApiCreds.key,
-        secret: derivedApiCreds.secret,
-        passphrase: derivedApiCreds.passphrase,
+      console.log('[useWalletTrading] Credentials derived, caching in localStorage...');
+
+      // Cache credentials in localStorage (browser only)
+      const credsToStore: StoredCredentials = {
+        key: derivedCreds.key,
+        secret: derivedCreds.secret,
+        passphrase: derivedCreds.passphrase,
         address: address,
       };
-
       localStorage.setItem(
         `${CREDS_STORAGE_KEY}_${address.toLowerCase()}`,
-        JSON.stringify(derivedCreds)
+        JSON.stringify(credsToStore)
       );
-      setCredentials(derivedCreds);
 
-      // Create the full client with credentials
+      // Create full client with credentials
       clobClientRef.current = new ClobClient(
         CLOB_API_URL,
         CHAIN_ID,
         signer,
         {
-          key: derivedApiCreds.key,
-          secret: derivedApiCreds.secret,
-          passphrase: derivedApiCreds.passphrase,
+          key: derivedCreds.key,
+          secret: derivedCreds.secret,
+          passphrase: derivedCreds.passphrase,
         },
-        0 // Browser wallet signature type
+        0 // EOA signature type
       );
 
+      setHasCredentials(true);
       setIsReady(true);
-      console.log('[useWalletTrading] Initialized with new credentials');
+      console.log('[useWalletTrading] Client initialized successfully');
       return true;
+
     } catch (err: any) {
       console.error('[useWalletTrading] Initialization failed:', err);
-      console.error('[useWalletTrading] Error name:', err?.name);
-      console.error('[useWalletTrading] Error message:', err?.message);
-      console.error('[useWalletTrading] Error stack:', err?.stack);
-      if (err?.response) {
-        console.error('[useWalletTrading] Response status:', err.response.status);
-        console.error('[useWalletTrading] Response data:', err.response.data);
-      }
 
       let errorMsg = err.message || 'Failed to initialize trading';
       if (errorMsg.includes('user rejected') || errorMsg.includes('User rejected')) {
         errorMsg = 'Signature rejected. Please sign to enable trading.';
-      } else if (errorMsg.includes('CORS') || errorMsg.includes('cors')) {
-        errorMsg = 'CORS error - try using the API method instead.';
       } else if (errorMsg.includes('network') || errorMsg.includes('Network')) {
-        errorMsg = 'Network error - check your connection.';
+        errorMsg = 'Network error. Check your connection.';
       }
 
       setError(errorMsg);
-      // Reset state on error to allow retry
       setIsReady(false);
       clobClientRef.current = null;
       return false;
     } finally {
       setIsInitializing(false);
     }
-  }, [connector, address, credentials, isReady, isGeoblocked, geoblockCountry]);
+  }, [connector, address, isReady]);
 
   /**
-   * Place an order using wallet signing
+   * Place an order - signs in browser, submits directly to Polymarket
    */
   const placeOrder = useCallback(async (params: OrderParams): Promise<OrderResult> => {
     setIsLoading(true);
@@ -334,17 +248,17 @@ export function useWalletTrading() {
         return { success: false, errorMessage: 'Wallet not connected' };
       }
 
-      // Initialize client if needed
+      // Initialize if needed
       if (!clobClientRef.current || !isReady) {
         const initialized = await initializeClient();
         if (!initialized) {
-          return { success: false, errorMessage: 'Failed to initialize trading. Please try again.' };
+          return { success: false, errorMessage: error || 'Failed to initialize trading' };
         }
       }
 
       const client = clobClientRef.current!;
 
-      // Validate price range (0.01 to 0.99 for Polymarket)
+      // Validate price range (Polymarket: 0.01 - 0.99)
       if (params.price < 0.01 || params.price > 0.99) {
         return { success: false, errorMessage: 'Price must be between 1¢ and 99¢' };
       }
@@ -353,10 +267,10 @@ export function useWalletTrading() {
         return { success: false, errorMessage: 'Size must be greater than 0' };
       }
 
-      const orderType = mapOrderType(params.orderType || 'GTC');
       const side = params.side === 'BUY' ? Side.BUY : Side.SELL;
+      const orderType = mapOrderType(params.orderType || 'GTC');
 
-      console.log('[useWalletTrading] Placing order:', {
+      console.log('[useWalletTrading] Creating order:', {
         tokenId: params.tokenId,
         side: params.side,
         price: params.price,
@@ -364,7 +278,7 @@ export function useWalletTrading() {
         orderType: params.orderType,
       });
 
-      // Create the order first
+      // Create order (signs with wallet)
       const order = await client.createOrder({
         tokenID: params.tokenId,
         price: params.price,
@@ -372,10 +286,12 @@ export function useWalletTrading() {
         size: params.size,
       });
 
-      // Post the order with the specified order type
+      console.log('[useWalletTrading] Order created, submitting to CLOB...');
+
+      // Submit directly to Polymarket CLOB
       const response = await client.postOrder(order, orderType);
 
-      console.log('[useWalletTrading] Response:', response);
+      console.log('[useWalletTrading] CLOB response:', response);
 
       if (response.success) {
         return {
@@ -389,6 +305,7 @@ export function useWalletTrading() {
           errorMessage: response.errorMsg || 'Order rejected by Polymarket',
         };
       }
+
     } catch (err: any) {
       console.error('[useWalletTrading] Order failed:', err);
 
@@ -401,8 +318,8 @@ export function useWalletTrading() {
         errorMessage = 'Transaction rejected by user.';
       } else if (errorMessage.includes('allowance')) {
         errorMessage = 'Token not approved. Enable trading on polymarket.com first.';
-      } else if (errorMessage.includes('rate limit') || errorMessage.includes('429')) {
-        errorMessage = 'Rate limit exceeded. Wait a moment and try again.';
+      } else if (errorMessage.includes('CORS') || errorMessage.includes('Failed to fetch')) {
+        errorMessage = 'Connection blocked. Try using a VPN or check your network.';
       }
 
       setError(errorMessage);
@@ -410,7 +327,7 @@ export function useWalletTrading() {
     } finally {
       setIsLoading(false);
     }
-  }, [isConnected, address, isReady, initializeClient]);
+  }, [isConnected, address, isReady, error, initializeClient]);
 
   /**
    * Cancel an order
@@ -453,13 +370,13 @@ export function useWalletTrading() {
   }, [isReady]);
 
   /**
-   * Clear derived credentials (useful for switching accounts)
+   * Clear credentials (for switching accounts)
    */
   const clearCredentials = useCallback(() => {
     if (address) {
       localStorage.removeItem(`${CREDS_STORAGE_KEY}_${address.toLowerCase()}`);
     }
-    setCredentials(null);
+    setHasCredentials(false);
     clobClientRef.current = null;
     setIsReady(false);
   }, [address]);
@@ -472,11 +389,9 @@ export function useWalletTrading() {
     isConnected,
     address,
     isReady,
-    hasCredentials: !!credentials,
+    hasCredentials,
     isOnPolygon,
     chainId,
-    isGeoblocked,
-    geoblockCountry,
 
     // Actions
     initializeClient,

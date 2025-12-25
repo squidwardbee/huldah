@@ -24,8 +24,17 @@ export function Orderbook({ tokenId, onPriceClick, onBestPricesChange }: Orderbo
   // Notify parent of best bid/ask changes
   useEffect(() => {
     if (data && onBestPricesChange) {
-      const bestBid = data.bids?.[0] ? parseFloat(data.bids[0].price) : undefined;
-      const bestAsk = data.asks?.[0] ? parseFloat(data.asks[0].price) : undefined;
+      const rawBid = data.bids?.[0]?.price;
+      const rawAsk = data.asks?.[0]?.price;
+      const bestBid = rawBid ? parseFloat(rawBid) : undefined;
+      const bestAsk = rawAsk ? parseFloat(rawAsk) : undefined;
+
+      console.log('[Orderbook] Best prices:', {
+        rawBid, rawAsk, bestBid, bestAsk,
+        bidsCount: data.bids?.length || 0,
+        asksCount: data.asks?.length || 0
+      });
+
       onBestPricesChange(bestBid, bestAsk);
     }
   }, [data, onBestPricesChange]);

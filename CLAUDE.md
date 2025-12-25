@@ -66,11 +66,13 @@ pnpm --filter web build
 | InsiderDetector | ML-based insider detection | 10 min |
 | MarketSyncService | Syncs markets from Gamma API | 15 min |
 
-### Trading Module (`apps/api/src/services/trading/`)
+### Trading Architecture
 
-- **MultiUserExecutor** - Aggregates orders, adds builder attribution
-- **UserManager** - Sessions, encrypted credentials, rate limits
-- **ClobClient/RelayerClient** - Polymarket CLOB and gasless relay
+**Client-side signing, server is read-only:**
+- User's private keys NEVER touch the server
+- API credentials stored in browser localStorage only
+- Orders signed in browser, submitted directly to Polymarket CLOB
+- Backend only aggregates market data (no trading involvement)
 
 ### Data Sources (from plan.md)
 
@@ -99,18 +101,42 @@ pnpm --filter web build
 
 ### Trading Implementation
 
-**Trading is now functional.** See `docs/adr/001-trading-execution.md` for full architecture.
+**Trading is now functional.** Non-custodial, just like native Polymarket.
 
-**How it works:**
-1. User registers Polymarket CLOB API credentials (one-time setup from polymarket.com/settings/api)
-2. Credentials encrypted with AES-256-GCM, stored in `user_api_credentials` table
-3. On order: server decrypts credentials, creates CLOB client with builder attribution
-4. Order submitted to Polymarket CLOB API
+**Architecture (per Polymarket PRD):**
+```
+┌─────────────────┐     ┌──────────────────┐     ┌─────────────────┐
+│   Frontend      │────▶│  Backend         │────▶│  Polymarket     │
+│   (React)       │     │  (Read-only)     │     │  Gamma API      │
+│                 │     │                  │     │  (Market Data)  │
+│  - Wallet conn  │     │  - Aggregates    │     └─────────────────┘
+│  - Order signing│     │    market data   │
+│  - CLOB client  │     │  - Caches prices │
+└────────┬────────┘     └──────────────────┘
+         │
+         │ Signed orders (direct)
+         ▼
+┌─────────────────┐
+│  Polymarket     │
+│  CLOB API       │
+│  (Order Submit) │
+└─────────────────┘
+```
+
+**Flow:**
+1. User connects wallet (MetaMask, etc.)
+2. First trade: sign message to derive API credentials (one-time)
+3. Credentials cached in browser localStorage
+4. Orders signed locally, submitted directly to Polymarket CLOB
 
 **Key files:**
-- `apps/api/src/services/trading/credentialStore.ts` - Encrypted credential storage
-- `apps/api/src/services/trading/multiUserExecutor.ts` - Order execution
-- `apps/web/src/components/trading/ApiCredentialsForm.tsx` - Credential setup UI
+- `apps/web/src/hooks/useWalletTrading.ts` - CLOB client, wallet signing, localStorage creds
+
+**Security:**
+- Private keys NEVER leave user's browser
+- API creds stored in browser localStorage only (not server)
+- Server has NO access to user credentials
+- All signing happens client-side
 
 **Market Order Validation:**
 - Frontend validates price is 0.01-0.99 before submission
@@ -118,18 +144,13 @@ pnpm --filter web build
 
 **Required Environment Variables:**
 ```bash
-# Trading - Builder attribution (required)
-POLY_BUILDER_API_KEY=
-POLY_BUILDER_SECRET=
-POLY_BUILDER_PASSPHRASE=
-
-# Credential encryption (required for user credential storage)
-CREDENTIAL_ENCRYPTION_KEY=  # Generate: openssl rand -hex 32
-
 # Database (defaults work with docker-compose)
 DB_HOST=host.docker.internal  # for WSL Docker Desktop
 REDIS_HOST=host.docker.internal
 ```
+
+**Geoblocking Note:**
+Users in restricted regions need VPN. The browser makes direct calls to Polymarket CLOB.
 
 ## Key Patterns
 

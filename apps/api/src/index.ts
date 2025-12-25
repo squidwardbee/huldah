@@ -292,7 +292,8 @@ app.get('/api/markets', async (req, res) => {
     const limit = Math.min(parseInt(req.query.limit as string) || 100, 500);
     const showAll = req.query.all === 'true';
     const showResolved = req.query.resolved === 'true';
-    
+    const tradeableOnly = req.query.tradeable !== 'false'; // Default: only tradeable
+
     // Default: show only open (unresolved) markets
     // ?resolved=true: show only resolved markets
     // ?all=true: show all markets
@@ -300,9 +301,9 @@ app.get('/api/markets', async (req, res) => {
     if (!showAll) {
       resolvedFilter = showResolved ? true : false;
     }
-    
+
     const { rows } = await db.query(`
-      SELECT 
+      SELECT
         condition_id,
         question,
         slug,
@@ -319,12 +320,17 @@ app.get('/api/markets', async (req, res) => {
       FROM markets
       WHERE ($1::boolean IS NULL OR COALESCE(resolved, false) = $1)
         AND question IS NOT NULL
-      ORDER BY 
+        AND ($3::boolean = false OR (
+          COALESCE(last_price_yes, 0.5) >= 0.05
+          AND COALESCE(last_price_yes, 0.5) <= 0.95
+          AND COALESCE(volume, 0) > 10000
+        ))
+      ORDER BY
         volume DESC NULLS LAST,
         question ASC
       LIMIT $2
-    `, [resolvedFilter, limit]);
-    
+    `, [resolvedFilter, limit, tradeableOnly]);
+
     res.json(rows);
   } catch (err) {
     console.error('Error fetching markets:', err);
@@ -493,6 +499,70 @@ app.post('/api/trading/order', async (req, res) => {
   }
 });
 
+// ============ CLOB API PROXY ============
+// Full proxy to Polymarket CLOB API - forwards all requests with headers intact
+// This allows frontend ClobClient to work through our backend (avoids CORS/geoblocking)
+app.all('/api/clob/*', async (req, res) => {
+  try {
+    // Extract the path after /api/clob
+    const clobPath = req.params[0] || '';
+    const url = `https://clob.polymarket.com/${clobPath}`;
+
+    console.log(`[CLOB Proxy] ${req.method} ${clobPath}`);
+
+    // Build headers - include Polymarket auth headers and make request look like browser
+    const forwardHeaders: Record<string, string> = {
+      'Host': 'clob.polymarket.com',
+      'Origin': 'https://polymarket.com',
+      'Referer': 'https://polymarket.com/',
+      'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+      'Accept': 'application/json',
+      'Accept-Language': 'en-US,en;q=0.9',
+      'Content-Type': 'application/json',
+    };
+
+    // Forward Polymarket auth headers
+    const polyHeaders = [
+      'poly_api_key',
+      'poly_signature',
+      'poly_timestamp',
+      'poly_nonce',
+      'poly_passphrase',
+      'poly_address',
+    ];
+
+    for (const header of polyHeaders) {
+      const value = req.headers[header.toLowerCase()];
+      if (value && typeof value === 'string') {
+        forwardHeaders[header.toUpperCase()] = value;
+      }
+    }
+
+    console.log(`[CLOB Proxy] Forwarding with headers:`, Object.keys(forwardHeaders));
+
+    // Make request to Polymarket
+    const response = await axios({
+      method: req.method as any,
+      url,
+      headers: forwardHeaders,
+      data: req.body,
+      params: req.query,
+      validateStatus: () => true, // Don't throw on non-2xx
+    });
+
+    console.log(`[CLOB Proxy] Response: ${response.status}`);
+
+    // Forward response
+    res.status(response.status).json(response.data);
+  } catch (err: any) {
+    console.error('[CLOB Proxy] Error:', err.message);
+    res.status(500).json({
+      success: false,
+      errorMsg: err.message || 'Proxy error'
+    });
+  }
+});
+
 // Cancel an order
 app.delete('/api/trading/order/:orderId', async (req, res) => {
   try {
@@ -535,17 +605,27 @@ app.get('/api/trading/history', async (_req, res) => {
 app.get('/api/trading/orderbook/:tokenId', async (req, res) => {
   try {
     const { tokenId } = req.params;
-    
+
     if (!tokenId || tokenId === 'undefined' || tokenId === 'null') {
       return res.json({ bids: [], asks: [], market: null });
     }
-    
+
     // Fetch directly from Polymarket CLOB API (public endpoint)
     const response = await clobClient.get('/book', {
       params: { token_id: tokenId },
     });
-    
-    res.json(response.data);
+
+    // Log orderbook data for debugging
+    const data = response.data;
+    console.log('[Orderbook] Fetched:', {
+      tokenId: tokenId.slice(0, 20) + '...',
+      bidsCount: data.bids?.length || 0,
+      asksCount: data.asks?.length || 0,
+      bestBid: data.bids?.[0]?.price,
+      bestAsk: data.asks?.[0]?.price,
+    });
+
+    res.json(data);
   } catch (err: any) {
     // Log but don't spam console for common 404s
     if (err.response?.status !== 404) {

@@ -28,20 +28,29 @@ export function MarketSelector({ selectedTokenId, onSelectToken }: MarketSelecto
     staleTime: 60000,
   });
 
-  // Filter by search and only show open markets
-  const filteredMarkets = markets.filter((m: Market) =>
-    m.question && 
-    m.question.toLowerCase().includes(search.toLowerCase()) &&
-    !m.resolved // Only show open markets
-  );
+  // Filter by search, only show open markets with tradeable prices
+  const filteredMarkets = markets
+    .filter((m: Market) => {
+      if (!m.question) return false;
+      if (m.resolved) return false; // Only open markets
+      if (!m.question.toLowerCase().includes(search.toLowerCase())) return false;
+
+      // Filter for tradeable prices (0.05 to 0.95 = 5¢ to 95¢)
+      const price = m.outcome_yes_price || 0.5;
+      const isTradeable = price >= 0.05 && price <= 0.95;
+
+      return isTradeable;
+    })
+    // Sort by volume (most liquid first)
+    .sort((a: Market, b: Market) => (b.volume || 0) - (a.volume || 0));
 
   return (
     <div className="bg-terminal-surface/80 border border-terminal-border rounded-lg overflow-hidden">
       {/* Header */}
       <div className="px-4 py-3 border-b border-terminal-border">
         <div className="flex items-center justify-between mb-3">
-          <h3 className="text-white font-mono text-sm font-semibold">OPEN MARKETS</h3>
-          <span className="text-neon-cyan text-xs font-mono">{filteredMarkets.length}</span>
+          <h3 className="text-white font-mono text-sm font-semibold">TRADEABLE MARKETS</h3>
+          <span className="text-neon-cyan text-xs font-mono">{filteredMarkets.length} liquid</span>
         </div>
         <input
           type="text"
@@ -74,10 +83,16 @@ export function MarketSelector({ selectedTokenId, onSelectToken }: MarketSelecto
           </div>
         ) : (
           <div className="divide-y divide-terminal-border/30">
-            {filteredMarkets.slice(0, 50).map((market: Market) => {
+            {filteredMarkets.slice(0, 100).map((market: Market) => {
               // Use condition_id as identifier for now - actual token_id fetched on demand
               const tokenId = market.condition_id;
               const isSelected = selectedTokenId === tokenId;
+              const volume = market.volume || 0;
+              const price = market.outcome_yes_price || 0.5;
+
+              // Liquidity tier based on volume
+              const liquidityTier = volume > 1000000 ? 'HIGH' : volume > 100000 ? 'MED' : 'LOW';
+              const liquidityColor = liquidityTier === 'HIGH' ? 'text-neon-green' : liquidityTier === 'MED' ? 'text-neon-amber' : 'text-terminal-muted';
 
               return (
                 <button
@@ -85,8 +100,8 @@ export function MarketSelector({ selectedTokenId, onSelectToken }: MarketSelecto
                   onClick={() => onSelectToken(tokenId, market)}
                   className={`
                     w-full px-4 py-3 text-left transition-colors
-                    ${isSelected 
-                      ? 'bg-neon-cyan/10 border-l-2 border-neon-cyan' 
+                    ${isSelected
+                      ? 'bg-neon-cyan/10 border-l-2 border-neon-cyan'
                       : 'hover:bg-terminal-bg border-l-2 border-transparent'
                     }
                   `}
@@ -97,12 +112,15 @@ export function MarketSelector({ selectedTokenId, onSelectToken }: MarketSelecto
                     </div>
                     {/* Price indicator */}
                     <span className="text-neon-green font-mono text-sm shrink-0">
-                      {((market.outcome_yes_price || 0.5) * 100).toFixed(0)}¢
+                      {(price * 100).toFixed(0)}¢
                     </span>
                   </div>
                   <div className="flex items-center gap-3 text-xs">
+                    <span className={`font-mono ${liquidityColor}`}>
+                      {liquidityTier}
+                    </span>
                     <span className="text-terminal-muted">
-                      Vol: <span className="text-neon-amber">${((market.volume || 0) / 1000000).toFixed(1)}M</span>
+                      ${(volume / 1000000).toFixed(1)}M
                     </span>
                     <span className="text-terminal-muted truncate">
                       /{market.slug}
