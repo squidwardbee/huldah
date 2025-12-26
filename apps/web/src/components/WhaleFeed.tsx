@@ -1,7 +1,7 @@
 import { useQuery } from '@tanstack/react-query';
 import { useAppStore, WhaleTrade } from '../stores/appStore';
 import { getRecentWhales } from '../lib/api';
-import { useEffect } from 'react';
+import { useEffect, useMemo } from 'react';
 
 function formatTime(timestamp: number): string {
   const date = new Date(timestamp);
@@ -80,10 +80,11 @@ export function WhaleFeed() {
   const { whaleTrades, connected, addWhaleTrade } = useAppStore();
 
   // Load initial trades from API
-  const { data: initialTrades } = useQuery<DbWhaleTrade[]>({
+  const { data: initialTrades, isLoading, error } = useQuery<DbWhaleTrade[]>({
     queryKey: ['whaleTrades'],
     queryFn: getRecentWhales,
     staleTime: 30000,
+    refetchInterval: 10000,
   });
 
   // Add initial trades to store (only once)
@@ -95,6 +96,22 @@ export function WhaleFeed() {
     }
   }, [initialTrades, addWhaleTrade]);
 
+  // Combine API data with WebSocket data, deduplicated
+  const allTrades = useMemo(() => {
+    const apiTrades = (initialTrades || []).map(transformDbTrade);
+    const combined = [...whaleTrades];
+
+    // Add API trades that aren't already in store
+    apiTrades.forEach(trade => {
+      if (!combined.some(t => t.txHash === trade.txHash)) {
+        combined.push(trade);
+      }
+    });
+
+    // Sort by timestamp descending
+    return combined.sort((a, b) => b.timestamp - a.timestamp).slice(0, 100);
+  }, [initialTrades, whaleTrades]);
+
   return (
     <div className="bg-terminal-surface/80 backdrop-blur border border-terminal-border rounded-lg overflow-hidden card-glow">
       {/* Header */}
@@ -104,25 +121,34 @@ export function WhaleFeed() {
           <h2 className="font-display text-xl text-neon-cyan tracking-wide">WHALE FEED</h2>
         </div>
         <div className="flex items-center gap-2">
-          <span 
-            className={`w-2.5 h-2.5 rounded-full ${connected ? 'bg-neon-green live-indicator' : 'bg-neon-red'}`} 
+          <span
+            className={`w-2.5 h-2.5 rounded-full ${connected ? 'bg-neon-green live-indicator' : 'bg-neon-red'}`}
           />
           <span className={`text-xs font-mono uppercase tracking-widest ${connected ? 'text-neon-green' : 'text-neon-red'}`}>
             {connected ? 'LIVE' : 'OFFLINE'}
           </span>
         </div>
       </div>
-      
+
       {/* Trade List */}
       <div className="max-h-[480px] overflow-y-auto">
-        {whaleTrades.length === 0 ? (
+        {isLoading ? (
+          <div className="p-8 text-center">
+            <div className="text-terminal-muted text-sm animate-pulse">[ LOADING WHALE DATA ]</div>
+          </div>
+        ) : error ? (
+          <div className="p-8 text-center">
+            <div className="text-neon-red text-sm">[ CONNECTION ERROR ]</div>
+            <div className="text-terminal-muted/60 text-xs mt-2">Unable to fetch whale data</div>
+          </div>
+        ) : allTrades.length === 0 ? (
           <div className="p-8 text-center">
             <div className="text-terminal-muted text-sm mb-2">[ AWAITING WHALE ACTIVITY ]</div>
             <div className="text-terminal-muted/60 text-xs">Large trades (&gt;$1000) will appear here</div>
           </div>
         ) : (
           <div className="divide-y divide-terminal-border/50">
-            {whaleTrades.map((trade, i) => (
+            {allTrades.map((trade, i) => (
               <div 
                 key={trade.txHash || `${trade.timestamp}-${i}`}
                 className="px-5 py-3 hover:bg-white/[0.02] transition-colors animate-slide-up"
