@@ -947,40 +947,54 @@ app.get('/api/user/positions', authMiddleware, async (req, res) => {
       return res.json(JSON.parse(cached));
     }
 
-    // Fetch positions from Goldsky subgraph
-    const rawPositions = await subgraphClient.getWalletPositions(proxyWallet);
+    // Fetch positions from Goldsky PnL subgraph (has avgPrice and realizedPnl)
+    const rawPositions = await subgraphClient.getWalletPositionsWithPnL(proxyWallet);
 
     // Filter to only non-zero positions
-    const activePositions = rawPositions.filter(p => parseFloat(p.balance) > 0.001);
+    const activePositions = rawPositions.filter(p => parseFloat(p.amount) > 0.001);
 
     if (activePositions.length === 0) {
       await redis.setex(cacheKey, 30, JSON.stringify([]));
       return res.json([]);
     }
 
-    // Get unique condition IDs to look up markets
-    const conditionIds = [...new Set(activePositions.map(p => p.condition))];
+    // Get unique token IDs to look up markets
+    const tokenIds = [...new Set(activePositions.map(p => p.tokenId))];
 
-    // Batch lookup markets from database
+    // Batch lookup markets from database by token IDs
     const marketsResult = await db.query(`
-      SELECT condition_id, question, slug, image_url, yes_token_id, no_token_id, outcome_yes_price, outcome_no_price
+      SELECT condition_id, question, slug, yes_token_id, no_token_id, last_price_yes, last_price_no
       FROM markets
-      WHERE condition_id = ANY($1)
-    `, [conditionIds]);
+      WHERE yes_token_id = ANY($1) OR no_token_id = ANY($1)
+    `, [tokenIds]);
 
-    const marketMap = new Map(marketsResult.rows.map(m => [m.condition_id, m]));
+    // Create a map from tokenId to market and outcome
+    const tokenToMarketMap = new Map<string, { market: any, isYes: boolean }>();
+    for (const market of marketsResult.rows) {
+      if (market.yes_token_id) {
+        tokenToMarketMap.set(market.yes_token_id, { market, isYes: true });
+      }
+      if (market.no_token_id) {
+        tokenToMarketMap.set(market.no_token_id, { market, isYes: false });
+      }
+    }
 
     // Enrich positions with market data and current prices
     const enrichedPositions = await Promise.all(
       activePositions.map(async (pos) => {
-        const market = marketMap.get(pos.condition);
-        const isYes = pos.outcomeIndex === 1;
-        const tokenId = isYes ? market?.yes_token_id : market?.no_token_id;
+        const marketInfo = tokenToMarketMap.get(pos.tokenId);
+        if (!marketInfo) {
+          console.warn('[Positions] No market found for tokenId', pos.tokenId);
+          return null;
+        }
+
+        const { market, isYes } = marketInfo;
+        const tokenId = pos.tokenId;
 
         // Get current price - try from market table first, then CLOB
         let currentPrice = isYes
-          ? (market?.outcome_yes_price || 0.5)
-          : (market?.outcome_no_price || 0.5);
+          ? (market?.last_price_yes || 0.5)
+          : (market?.last_price_no || 0.5);
 
         // Try to get live price from CLOB (with caching)
         if (tokenId) {
@@ -1014,8 +1028,10 @@ app.get('/api/user/positions', authMiddleware, async (req, res) => {
           }
         }
 
-        const size = parseFloat(pos.balance);
-        const avgPrice = parseFloat(pos.averagePrice);
+        // Parse position data from PnL subgraph
+        // avgPrice and amounts are in basis points (divide by 1e6 for price, keep amount as-is for shares)
+        const size = parseFloat(pos.amount) / 1e6; // Convert to shares
+        const avgPrice = parseFloat(pos.avgPrice) / 1e6; // Convert to price (0-1 range)
 
         // Calculate unrealized PnL
         // For YES: profit if current price > avg price
@@ -1025,25 +1041,28 @@ app.get('/api/user/positions', authMiddleware, async (req, res) => {
           : (avgPrice - currentPrice) * size;
 
         return {
-          tokenId: tokenId || pos.condition,
-          conditionId: pos.condition,
-          marketQuestion: market?.question || `Market ${pos.condition.slice(0, 8)}...`,
+          tokenId: tokenId,
+          conditionId: market.condition_id,
+          marketQuestion: market?.question || `Market ${market.condition_id.slice(0, 8)}...`,
           outcome: isYes ? 'YES' : 'NO',
           size,
           avgPrice,
           currentPrice,
           unrealizedPnl,
-          realizedPnl: parseFloat(pos.realizedPnl),
+          realizedPnl: parseFloat(pos.realizedPnl) / 1e6, // Convert from basis points
           marketSlug: market?.slug,
         };
       })
     );
 
-    // Cache enriched positions for 30 seconds
-    await redis.setex(cacheKey, 30, JSON.stringify(enrichedPositions));
+    // Filter out null values (positions without markets)
+    const validPositions = enrichedPositions.filter(p => p !== null);
 
-    console.log('[Positions] Returning', enrichedPositions.length, 'positions');
-    res.json(enrichedPositions);
+    // Cache enriched positions for 30 seconds
+    await redis.setex(cacheKey, 30, JSON.stringify(validPositions));
+
+    console.log('[Positions] Returning', validPositions.length, 'positions');
+    res.json(validPositions);
   } catch (err) {
     console.error('Error fetching positions:', err);
     res.status(500).json({ error: 'Failed to fetch positions' });

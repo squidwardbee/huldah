@@ -7,11 +7,26 @@ const ENDPOINTS = {
 };
 
 export interface Position {
-  condition: string;
-  outcomeIndex: number;
+  id: string;
+  user: string;
   balance: string;
-  averagePrice: string;
+  asset: {
+    id: string;
+    condition: {
+      id: string;
+    };
+    outcomeIndex: string;
+  };
+}
+
+export interface UserPositionWithPnL {
+  id: string;
+  user: string;
+  tokenId: string;
+  amount: string;
+  avgPrice: string;
   realizedPnl: string;
+  totalBought: string;
 }
 
 interface GraphQLResponse<T> {
@@ -31,23 +46,28 @@ export class SubgraphClient {
   async getWalletPositions(walletAddress: string, first = 100): Promise<Position[]> {
     const query = `
       query GetPositions($wallet: String!, $first: Int!) {
-        positions(where: { user: $wallet }, first: $first) {
-          condition
-          outcomeIndex
+        userBalances(where: { user: $wallet, balance_gt: "0" }, first: $first) {
+          id
+          user
           balance
-          averagePrice
-          realizedPnl
+          asset {
+            id
+            condition {
+              id
+            }
+            outcomeIndex
+          }
         }
       }
     `;
-    
-    const result = await this.query<{ positions: Position[] }>(
+
+    const result = await this.query<{ userBalances: Position[] }>(
       ENDPOINTS.positions,
       query,
       { wallet: walletAddress.toLowerCase(), first }
     );
-    
-    return result.positions;
+
+    return result.userBalances;
   }
 
   async getTopWalletsByPnL(first = 100): Promise<{ id: string; realizedPnl: string }[]> {
@@ -74,33 +94,79 @@ export class SubgraphClient {
    */
   async getMarketHolders(conditionId: string, first = 50): Promise<{
     user: string;
-    outcomeIndex: number;
+    outcomeIndex: string;
     balance: string;
-    averagePrice: string;
   }[]> {
     const query = `
       query MarketHolders($condition: String!, $first: Int!) {
-        positions(
-          where: { condition: $condition, balance_gt: "0" }
+        userBalances(
+          where: { balance_gt: "0" }
           orderBy: balance
           orderDirection: desc
           first: $first
         ) {
           user
-          outcomeIndex
           balance
-          averagePrice
+          asset {
+            condition {
+              id
+            }
+            outcomeIndex
+          }
         }
       }
     `;
-    
-    const result = await this.query<{ positions: { user: string; outcomeIndex: number; balance: string; averagePrice: string }[] }>(
+
+    const result = await this.query<{
+      userBalances: {
+        user: string;
+        balance: string;
+        asset: {
+          condition: { id: string };
+          outcomeIndex: string
+        }
+      }[]
+    }>(
       ENDPOINTS.positions,
       query,
       { condition: conditionId, first }
     );
-    
-    return result.positions;
+
+    // Filter by condition and flatten the response
+    return result.userBalances
+      .filter(ub => ub.asset.condition.id.toLowerCase() === conditionId.toLowerCase())
+      .map(ub => ({
+        user: ub.user,
+        outcomeIndex: ub.asset.outcomeIndex,
+        balance: ub.balance
+      }));
+  }
+
+  /**
+   * Get wallet positions with PnL data from the PnL subgraph
+   */
+  async getWalletPositionsWithPnL(walletAddress: string, first = 100): Promise<UserPositionWithPnL[]> {
+    const query = `
+      query GetUserPositions($wallet: String!, $first: Int!) {
+        userPositions(where: { user: $wallet }, first: $first, orderBy: amount, orderDirection: desc) {
+          id
+          user
+          tokenId
+          amount
+          avgPrice
+          realizedPnl
+          totalBought
+        }
+      }
+    `;
+
+    const result = await this.query<{ userPositions: UserPositionWithPnL[] }>(
+      ENDPOINTS.pnl,
+      query,
+      { wallet: walletAddress.toLowerCase(), first }
+    );
+
+    return result.userPositions;
   }
 }
 

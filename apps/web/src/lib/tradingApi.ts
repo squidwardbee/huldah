@@ -31,8 +31,9 @@ export async function getMe(token: string) {
   return data;
 }
 
-export async function getUserPositions(token: string) {
-  const { data } = await api.get('/api/user/positions', {
+export async function getUserPositions(token: string, proxyWallet?: string) {
+  const params = proxyWallet ? `?proxyWallet=${proxyWallet}` : '';
+  const { data } = await api.get(`/api/user/positions${params}`, {
     headers: { Authorization: `Bearer ${token}` },
   });
   return data;

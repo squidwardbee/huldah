@@ -1,15 +1,19 @@
 import { useQuery } from '@tanstack/react-query';
 import { useAuthStore } from '../../stores/authStore';
+import { useWalletTrading } from '../../hooks/useWalletTrading';
 import { getUserPositions, getUserOrders } from '../../lib/tradingApi';
 
 interface Position {
   tokenId: string;
+  conditionId?: string;
   marketQuestion: string;
   outcome: string;
   size: number;
   avgPrice: number;
   currentPrice: number;
   unrealizedPnl: number;
+  realizedPnl?: number;
+  marketSlug?: string;
 }
 
 interface Order {
@@ -30,11 +34,12 @@ interface PositionsProps {
 
 export function Positions({ compact = false }: PositionsProps) {
   const { token, isAuthenticated } = useAuthStore();
+  const { proxyWallet } = useWalletTrading();
 
   const { data: positions = [], isLoading: loadingPositions } = useQuery({
-    queryKey: ['positions'],
-    queryFn: () => getUserPositions(token!),
-    enabled: isAuthenticated && !!token,
+    queryKey: ['positions', proxyWallet],
+    queryFn: () => getUserPositions(token!, proxyWallet || undefined),
+    enabled: isAuthenticated && !!token && !!proxyWallet,
     refetchInterval: 10000,
   });
 
