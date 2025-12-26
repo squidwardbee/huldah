@@ -20,68 +20,86 @@ const queryClient = new QueryClient({
 
 type Tab = 'intelligence' | 'trading';
 
+function SearchBar() {
+  const [query, setQuery] = useState('');
+
+  return (
+    <div className="relative">
+      <input
+        type="text"
+        value={query}
+        onChange={(e) => setQuery(e.target.value)}
+        placeholder="Search markets or wallets..."
+        className="w-64 bg-terminal-surface/80 border border-terminal-border rounded px-3 py-1.5 text-sm text-white placeholder-terminal-muted focus:outline-none focus:border-neon-cyan/50 font-mono"
+      />
+      <svg
+        className="absolute right-3 top-1/2 -translate-y-1/2 w-4 h-4 text-terminal-muted"
+        fill="none"
+        stroke="currentColor"
+        viewBox="0 0 24 24"
+      >
+        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
+      </svg>
+    </div>
+  );
+}
+
 function Dashboard() {
   useWhaleFeed();
   const [activeTab, setActiveTab] = useState<Tab>('intelligence');
   const { isAuthenticated } = useAuthStore();
 
   return (
-    <div className="min-h-screen p-6 md:p-8">
-      {/* Header */}
-      <header className="mb-6 animate-fade-in">
-        <div className="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-4">
-          {/* Logo & Title */}
-          <div>
-            <div className="flex items-center gap-4 mb-2">
-              <div className="w-3 h-3 bg-neon-cyan rounded-full animate-pulse" />
-              <h1 className="font-display text-3xl md:text-4xl text-white tracking-tight">
+    <div className="min-h-screen flex flex-col">
+      {/* Compact Header */}
+      <header className="bg-terminal-bg/95 backdrop-blur border-b border-terminal-border px-4 py-2 animate-fade-in">
+        <div className="flex items-center justify-between gap-4">
+          {/* Left: Logo + Tabs */}
+          <div className="flex items-center gap-6">
+            {/* Logo */}
+            <div className="flex items-center gap-2">
+              <div className="w-2 h-2 bg-neon-cyan rounded-full animate-pulse" />
+              <h1 className="font-display text-lg text-white tracking-tight">
                 HULDAH<span className="text-neon-cyan">.AI</span>
               </h1>
             </div>
-            <p className="text-terminal-muted text-xs tracking-widest uppercase pl-7">
-              Polymarket Intelligence & Execution Terminal
-            </p>
+
+            {/* Navigation Tabs */}
+            <nav className="flex gap-1">
+              <TabButton
+                active={activeTab === 'intelligence'}
+                onClick={() => setActiveTab('intelligence')}
+              >
+                INTELLIGENCE
+              </TabButton>
+              <TabButton
+                active={activeTab === 'trading'}
+                onClick={() => setActiveTab('trading')}
+                badge={isAuthenticated ? undefined : 'SIGN IN'}
+              >
+                TRADING
+              </TabButton>
+            </nav>
           </div>
-          
-          {/* Wallet Connection */}
-          <div className="pl-7 lg:pl-0">
+
+          {/* Right: Search + Wallet */}
+          <div className="flex items-center gap-4">
+            <SearchBar />
             <ConnectWallet />
           </div>
         </div>
-
-        {/* Navigation Tabs */}
-        <nav className="mt-6 flex gap-1 border-b border-terminal-border">
-          <TabButton 
-            active={activeTab === 'intelligence'} 
-            onClick={() => setActiveTab('intelligence')}
-          >
-            <span className="hidden sm:inline">🔍</span> INTELLIGENCE
-          </TabButton>
-          <TabButton 
-            active={activeTab === 'trading'} 
-            onClick={() => setActiveTab('trading')}
-            badge={isAuthenticated ? undefined : 'SIGN IN'}
-          >
-            <span className="hidden sm:inline">⚡</span> TRADING
-          </TabButton>
-        </nav>
       </header>
 
-      {/* Content */}
-      <main className="animate-fade-in" style={{ animationDelay: '100ms' }}>
+      {/* Content - Full height */}
+      <main className="flex-1 animate-fade-in overflow-hidden" style={{ animationDelay: '100ms' }}>
         {activeTab === 'intelligence' ? (
-          <IntelligenceView />
+          <div className="h-full p-4">
+            <IntelligenceView />
+          </div>
         ) : (
           <TradingView />
         )}
       </main>
-
-      {/* Footer */}
-      <footer className="mt-12 text-center text-terminal-muted/40 text-xs">
-        <span className="font-mono">v2.0.0</span>
-        <span className="mx-3">|</span>
-        <span>Real-time prediction market intelligence & execution</span>
-      </footer>
     </div>
   );
 }
@@ -106,14 +124,14 @@ function IntelligenceView() {
   );
 }
 
-function TabButton({ 
-  children, 
-  active, 
+function TabButton({
+  children,
+  active,
   onClick,
   badge,
-}: { 
-  children: React.ReactNode; 
-  active: boolean; 
+}: {
+  children: React.ReactNode;
+  active: boolean;
   onClick: () => void;
   badge?: string;
 }) {
@@ -121,17 +139,16 @@ function TabButton({
     <button
       onClick={onClick}
       className={`
-        relative px-6 py-3 font-mono text-sm font-semibold transition-all
-        border-b-2 -mb-[2px]
-        ${active 
-          ? 'text-neon-cyan border-neon-cyan bg-neon-cyan/5' 
-          : 'text-terminal-muted border-transparent hover:text-white hover:bg-terminal-surface/50'
+        relative px-3 py-1.5 font-mono text-xs font-semibold transition-all rounded
+        ${active
+          ? 'text-neon-cyan bg-neon-cyan/10'
+          : 'text-terminal-muted hover:text-white hover:bg-terminal-surface/50'
         }
       `}
     >
       {children}
       {badge && (
-        <span className="ml-2 px-1.5 py-0.5 text-[10px] bg-neon-amber/20 text-neon-amber rounded">
+        <span className="ml-1.5 px-1 py-0.5 text-[9px] bg-neon-amber/20 text-neon-amber rounded">
           {badge}
         </span>
       )}

@@ -15,6 +15,7 @@ interface OrderFormProps {
   bestBid?: number;
   bestAsk?: number;
   onOrderPlaced?: () => void;
+  compact?: boolean;
 }
 
 type OrderMode = 'LIMIT' | 'MARKET';
@@ -30,7 +31,8 @@ export function OrderForm({
   currentPrice = 0.5,
   bestBid,
   bestAsk,
-  onOrderPlaced
+  onOrderPlaced,
+  compact = false
 }: OrderFormProps) {
   const { isConnected } = useAccount();
 
@@ -179,11 +181,11 @@ export function OrderForm({
   const isProcessing = isSubmitting || isTradeLoading;
 
   return (
-    <div className="bg-terminal-surface/80 border border-terminal-border rounded-lg overflow-hidden">
+    <div className={`bg-terminal-surface/80 border border-terminal-border overflow-hidden h-full flex flex-col ${compact ? 'rounded-none border-x-0 border-b-0' : 'rounded-lg'}`}>
       {/* Header */}
-      <div className="px-4 py-3 border-b border-terminal-border">
+      <div className={`border-b border-terminal-border shrink-0 ${compact ? 'px-3 py-2' : 'px-4 py-3'}`}>
         <div className="flex items-center justify-between">
-          <h3 className="text-white font-mono text-sm font-semibold">PLACE ORDER</h3>
+          <h3 className="text-white font-mono text-xs font-semibold">ORDER</h3>
           {/* Trading Method Selector */}
           <div className="flex gap-1">
             <button

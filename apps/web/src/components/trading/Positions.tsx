@@ -24,7 +24,11 @@ interface Order {
   createdAt: string;
 }
 
-export function Positions() {
+interface PositionsProps {
+  compact?: boolean;
+}
+
+export function Positions({ compact = false }: PositionsProps) {
   const { token, isAuthenticated } = useAuthStore();
 
   const { data: positions = [], isLoading: loadingPositions } = useQuery({
@@ -42,6 +46,40 @@ export function Positions() {
   });
 
   const openOrders = isAuthenticated ? orders.filter((o: Order) => o.status === 'LIVE' || o.status === 'OPEN') : [];
+
+  // Compact mode: just show positions in a simple table format
+  if (compact) {
+    if (loadingPositions) {
+      return <div className="text-center text-terminal-muted text-xs py-2">Loading...</div>;
+    }
+    if (positions.length === 0) {
+      return <div className="text-center text-terminal-muted text-xs py-2">No positions</div>;
+    }
+    return (
+      <table className="w-full text-xs">
+        <thead>
+          <tr className="text-terminal-muted uppercase text-[10px]">
+            <th className="text-left py-1 px-2">Market</th>
+            <th className="text-right py-1 px-2">Size</th>
+            <th className="text-right py-1 px-2">Entry</th>
+            <th className="text-right py-1 px-2">PnL</th>
+          </tr>
+        </thead>
+        <tbody>
+          {positions.map((pos: Position) => (
+            <tr key={pos.tokenId} className="border-t border-terminal-border/30">
+              <td className="py-1.5 px-2 text-white truncate max-w-[200px]">{pos.marketQuestion}</td>
+              <td className="py-1.5 px-2 text-right text-white font-mono">{pos.size}</td>
+              <td className="py-1.5 px-2 text-right text-terminal-muted font-mono">{(pos.avgPrice * 100).toFixed(1)}¢</td>
+              <td className={`py-1.5 px-2 text-right font-mono ${pos.unrealizedPnl >= 0 ? 'text-neon-green' : 'text-neon-red'}`}>
+                {pos.unrealizedPnl >= 0 ? '+' : ''}{pos.unrealizedPnl.toFixed(2)}
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    );
+  }
 
   return (
     <div className="space-y-4">

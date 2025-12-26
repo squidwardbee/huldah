@@ -1,6 +1,6 @@
 import { useQuery } from '@tanstack/react-query';
-import { useState } from 'react';
-import { getMarkets, getCategories, type Market } from '../../lib/tradingApi';
+import { useMemo } from 'react';
+import { getMarkets, type Market } from '../../lib/tradingApi';
 
 interface MarketGridProps {
   onSelectMarket: (market: Market) => void;
@@ -16,234 +16,243 @@ function formatVolume(volume: number | string | null | undefined): string {
   return `$${num.toFixed(0)}`;
 }
 
-// Format price change as percentage
-function formatPriceChange(change: number | string | null | undefined): { text: string; color: string } {
-  const num = typeof change === 'string' ? parseFloat(change) : (change || 0);
-  if (isNaN(num)) return { text: '0%', color: 'text-terminal-muted' };
-  const percent = (num * 100).toFixed(1);
-  if (num > 0) return { text: `+${percent}%`, color: 'text-neon-green' };
-  if (num < 0) return { text: `${percent}%`, color: 'text-neon-red' };
-  return { text: '0%', color: 'text-terminal-muted' };
-}
-
 // Default image for markets without one
 const DEFAULT_IMAGE = 'https://polymarket.com/images/default-market.png';
 
 export function MarketGrid({ onSelectMarket, selectedMarketId }: MarketGridProps) {
-  const [selectedCategory, setSelectedCategory] = useState<string | null>(null);
-  const [search, setSearch] = useState('');
-
-  // Fetch categories
-  const { data: categories = [] } = useQuery({
-    queryKey: ['categories'],
-    queryFn: getCategories,
-    staleTime: 60000,
-  });
-
-  // Fetch markets with category filter
+  // Fetch all markets
   const { data: markets = [], isLoading } = useQuery({
-    queryKey: ['markets', selectedCategory],
-    queryFn: () => getMarkets(200, selectedCategory || undefined),
+    queryKey: ['markets'],
+    queryFn: () => getMarkets(300),
     staleTime: 30000,
   });
 
-  // Filter markets by search
-  const filteredMarkets = markets.filter((m) => {
-    if (!m.question) return false;
-    if (search && !m.question.toLowerCase().includes(search.toLowerCase())) return false;
-    return true;
-  });
+  // Sort markets into columns
+  const { newMarkets, trendingMarkets, almostResolvedMarkets } = useMemo(() => {
+    const now = Date.now();
+    const threeDaysFromNow = now + 3 * 24 * 60 * 60 * 1000;
 
-  // All category options including "All"
-  const allCategories = [
-    { category: 'All', count: markets.length },
-    ...categories,
-  ];
+    // New markets: high volume, recently active
+    const newMarkets = markets
+      .filter((m) => {
+        const volume = typeof m.volume === 'string' ? parseFloat(m.volume) : (m.volume || 0);
+        return volume > 10000;
+      })
+      .sort((a, b) => {
+        const volA = typeof a.volume === 'string' ? parseFloat(a.volume) : (a.volume || 0);
+        const volB = typeof b.volume === 'string' ? parseFloat(b.volume) : (b.volume || 0);
+        return volB - volA;
+      })
+      .slice(0, 15);
+
+    // Trending: high 24h volume
+    const trendingMarkets = markets
+      .filter((m) => {
+        const vol24h = typeof m.volume_24h === 'string' ? parseFloat(m.volume_24h) : (m.volume_24h || 0);
+        return vol24h > 5000;
+      })
+      .sort((a, b) => {
+        const volA = typeof a.volume_24h === 'string' ? parseFloat(a.volume_24h) : (a.volume_24h || 0);
+        const volB = typeof b.volume_24h === 'string' ? parseFloat(b.volume_24h) : (b.volume_24h || 0);
+        return volB - volA;
+      })
+      .slice(0, 15);
+
+    // Almost resolved: end_date within 3 days
+    const almostResolvedMarkets = markets
+      .filter((m) => {
+        if (!m.end_date) return false;
+        const endTime = new Date(m.end_date).getTime();
+        return endTime > now && endTime < threeDaysFromNow;
+      })
+      .sort((a, b) => {
+        const endA = new Date(a.end_date || 0).getTime();
+        const endB = new Date(b.end_date || 0).getTime();
+        return endA - endB; // Earliest first
+      })
+      .slice(0, 15);
+
+    return { newMarkets, trendingMarkets, almostResolvedMarkets };
+  }, [markets]);
+
+  if (isLoading) {
+    return (
+      <div className="grid grid-cols-3 gap-4 h-full">
+        {[0, 1, 2].map((col) => (
+          <div key={col} className="bg-terminal-surface/60 border border-terminal-border rounded-lg">
+            <div className="p-3 border-b border-terminal-border">
+              <div className="h-5 bg-terminal-border/50 rounded w-24 animate-pulse" />
+            </div>
+            <div className="p-2 space-y-2">
+              {[...Array(5)].map((_, i) => (
+                <div key={i} className="h-16 bg-terminal-border/30 rounded animate-pulse" />
+              ))}
+            </div>
+          </div>
+        ))}
+      </div>
+    );
+  }
 
   return (
-    <div className="space-y-4">
-      {/* Filter Bar */}
-      <div className="bg-terminal-surface/80 border border-terminal-border rounded-lg p-4">
-        <div className="flex flex-col lg:flex-row gap-4">
-          {/* Search */}
-          <div className="flex-1">
-            <input
-              type="text"
-              value={search}
-              onChange={(e) => setSearch(e.target.value)}
-              placeholder="Search markets..."
-              className="
-                w-full bg-terminal-bg border border-terminal-border rounded-lg
-                px-4 py-2.5 font-mono text-sm text-white
-                focus:outline-none focus:border-neon-cyan
-                placeholder:text-terminal-muted
-              "
-            />
-          </div>
+    <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 h-full">
+      {/* New Markets Column */}
+      <MarketColumn
+        title="NEW"
+        subtitle="High volume markets"
+        markets={newMarkets}
+        onSelectMarket={onSelectMarket}
+        selectedMarketId={selectedMarketId}
+        accentColor="cyan"
+      />
 
-          {/* Category Filters */}
-          <div className="flex flex-wrap gap-2">
-            {allCategories.map((cat) => (
-              <button
-                key={cat.category}
-                onClick={() => setSelectedCategory(cat.category === 'All' ? null : cat.category)}
-                className={`
-                  px-3 py-1.5 rounded-lg font-mono text-xs font-medium transition-all
-                  ${(selectedCategory === null && cat.category === 'All') ||
-                    selectedCategory === cat.category
-                    ? 'bg-neon-cyan/20 text-neon-cyan border border-neon-cyan/50'
-                    : 'bg-terminal-bg border border-terminal-border text-terminal-muted hover:text-white hover:border-terminal-border/80'
-                  }
-                `}
-              >
-                {cat.category}
-                <span className="ml-1 opacity-60">({cat.count})</span>
-              </button>
-            ))}
-          </div>
-        </div>
+      {/* Trending Column */}
+      <MarketColumn
+        title="TRENDING"
+        subtitle="Hot in last 24h"
+        markets={trendingMarkets}
+        onSelectMarket={onSelectMarket}
+        selectedMarketId={selectedMarketId}
+        accentColor="amber"
+      />
 
-        {/* Results count */}
-        <div className="mt-3 text-xs text-terminal-muted">
-          Showing {filteredMarkets.length} markets
-          {selectedCategory && ` in ${selectedCategory}`}
-        </div>
-      </div>
-
-      {/* Market Grid */}
-      {isLoading ? (
-        <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
-          {[...Array(6)].map((_, i) => (
-            <div key={i} className="bg-terminal-surface/60 border border-terminal-border rounded-lg p-4 animate-pulse">
-              <div className="flex gap-3">
-                <div className="w-16 h-16 bg-terminal-border/50 rounded-lg" />
-                <div className="flex-1 space-y-2">
-                  <div className="h-4 bg-terminal-border/50 rounded w-3/4" />
-                  <div className="h-3 bg-terminal-border/30 rounded w-1/2" />
-                  <div className="h-3 bg-terminal-border/30 rounded w-1/3" />
-                </div>
-              </div>
-            </div>
-          ))}
-        </div>
-      ) : filteredMarkets.length === 0 ? (
-        <div className="bg-terminal-surface/60 border border-terminal-border rounded-lg p-12 text-center">
-          <div className="text-terminal-muted text-sm">No markets found</div>
-          <div className="text-terminal-muted/60 text-xs mt-1">Try adjusting your filters</div>
-        </div>
-      ) : (
-        <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
-          {filteredMarkets.map((market) => (
-            <MarketCard
-              key={market.condition_id}
-              market={market}
-              isSelected={selectedMarketId === market.condition_id}
-              onSelect={() => onSelectMarket(market)}
-            />
-          ))}
-        </div>
-      )}
+      {/* Almost Resolved Column */}
+      <MarketColumn
+        title="CLOSING SOON"
+        subtitle="Resolving in < 3 days"
+        markets={almostResolvedMarkets}
+        onSelectMarket={onSelectMarket}
+        selectedMarketId={selectedMarketId}
+        accentColor="magenta"
+      />
     </div>
   );
 }
 
-interface MarketCardProps {
+interface MarketColumnProps {
+  title: string;
+  subtitle: string;
+  markets: Market[];
+  onSelectMarket: (market: Market) => void;
+  selectedMarketId: string | null;
+  accentColor: 'cyan' | 'amber' | 'magenta';
+}
+
+function MarketColumn({
+  title,
+  subtitle,
+  markets,
+  onSelectMarket,
+  selectedMarketId,
+  accentColor,
+}: MarketColumnProps) {
+  const colorClasses = {
+    cyan: 'text-neon-cyan border-neon-cyan/30',
+    amber: 'text-neon-amber border-neon-amber/30',
+    magenta: 'text-neon-magenta border-neon-magenta/30',
+  };
+
+  return (
+    <div className="bg-terminal-surface/60 border border-terminal-border rounded-lg flex flex-col overflow-hidden">
+      {/* Column Header */}
+      <div className={`px-3 py-2 border-b ${colorClasses[accentColor].split(' ')[1]} bg-terminal-bg/50`}>
+        <h3 className={`font-mono text-sm font-bold ${colorClasses[accentColor].split(' ')[0]}`}>
+          {title}
+        </h3>
+        <p className="text-terminal-muted text-[10px]">{subtitle}</p>
+      </div>
+
+      {/* Market List */}
+      <div className="flex-1 overflow-y-auto">
+        {markets.length === 0 ? (
+          <div className="p-4 text-center text-terminal-muted text-xs">
+            No markets found
+          </div>
+        ) : (
+          <div className="divide-y divide-terminal-border/30">
+            {markets.map((market) => (
+              <CompactMarketCard
+                key={market.condition_id}
+                market={market}
+                isSelected={selectedMarketId === market.condition_id}
+                onSelect={() => onSelectMarket(market)}
+              />
+            ))}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+interface CompactMarketCardProps {
   market: Market;
   isSelected: boolean;
   onSelect: () => void;
 }
 
-function MarketCard({ market, isSelected, onSelect }: MarketCardProps) {
-  // Parse numeric values (API may return strings)
+function CompactMarketCard({ market, isSelected, onSelect }: CompactMarketCardProps) {
   const price = typeof market.outcome_yes_price === 'string'
     ? parseFloat(market.outcome_yes_price)
     : (market.outcome_yes_price || 0.5);
-  const volume24h = typeof market.volume_24h === 'string'
-    ? parseFloat(market.volume_24h)
-    : (market.volume_24h || 0);
-  const priceChange = formatPriceChange(market.price_change_24h);
+
+  const volume = typeof market.volume === 'string'
+    ? parseFloat(market.volume)
+    : (market.volume || 0);
+
+  // Calculate time until resolution
+  const getTimeUntil = () => {
+    if (!market.end_date) return null;
+    const endTime = new Date(market.end_date).getTime();
+    const now = Date.now();
+    const diff = endTime - now;
+    if (diff <= 0) return 'Ended';
+    const hours = Math.floor(diff / (1000 * 60 * 60));
+    const days = Math.floor(hours / 24);
+    if (days > 0) return `${days}d`;
+    return `${hours}h`;
+  };
+
+  const timeUntil = getTimeUntil();
 
   return (
     <button
       onClick={onSelect}
       className={`
-        w-full text-left bg-terminal-surface/60 border rounded-lg p-4
-        transition-all hover:bg-terminal-surface/80 hover:border-neon-cyan/50
-        ${isSelected
-          ? 'border-neon-cyan bg-neon-cyan/5'
-          : 'border-terminal-border'
-        }
+        w-full text-left p-2.5 transition-all hover:bg-terminal-surface/80
+        ${isSelected ? 'bg-neon-cyan/10 border-l-2 border-l-neon-cyan' : ''}
       `}
     >
-      <div className="flex gap-3">
-        {/* Market Image */}
-        <div className="shrink-0">
-          <img
-            src={market.image_url || market.icon_url || DEFAULT_IMAGE}
-            alt=""
-            className="w-16 h-16 rounded-lg object-cover bg-terminal-border"
-            onError={(e) => {
-              (e.target as HTMLImageElement).src = DEFAULT_IMAGE;
-            }}
-          />
-        </div>
+      <div className="flex gap-2">
+        {/* Image */}
+        <img
+          src={market.image_url || market.icon_url || DEFAULT_IMAGE}
+          alt=""
+          className="w-10 h-10 rounded object-cover bg-terminal-border shrink-0"
+          onError={(e) => {
+            (e.target as HTMLImageElement).src = DEFAULT_IMAGE;
+          }}
+        />
 
-        {/* Market Info */}
+        {/* Content */}
         <div className="flex-1 min-w-0">
-          {/* Question */}
-          <h3 className="text-white text-sm font-medium leading-tight line-clamp-2 mb-2">
+          <h4 className="text-white text-xs font-medium leading-tight line-clamp-2 mb-1">
             {market.question}
-          </h3>
-
-          {/* Price & Change */}
-          <div className="flex items-center gap-3 mb-2">
-            <span className="text-neon-cyan font-mono text-lg font-bold">
+          </h4>
+          <div className="flex items-center gap-2 text-[10px]">
+            <span className="text-neon-cyan font-mono font-bold">
               {isNaN(price) ? '50' : (price * 100).toFixed(0)}%
             </span>
-            <span className={`font-mono text-xs ${priceChange.color}`}>
-              {priceChange.text}
+            <span className="text-terminal-muted font-mono">
+              {formatVolume(volume)}
             </span>
-          </div>
-
-          {/* Volume & Category */}
-          <div className="flex items-center gap-2 text-xs text-terminal-muted">
-            <span className="font-mono">{formatVolume(market.volume)}</span>
-            <span className="opacity-40">|</span>
-            <span className="font-mono">{formatVolume(volume24h)} 24h</span>
-            {market.category && (
-              <>
-                <span className="opacity-40">|</span>
-                <span className="px-1.5 py-0.5 bg-terminal-border/50 rounded text-[10px]">
-                  {market.category}
-                </span>
-              </>
+            {timeUntil && (
+              <span className="text-neon-magenta font-mono">
+                {timeUntil}
+              </span>
             )}
           </div>
         </div>
-      </div>
-
-      {/* Tags placeholder (for future insider activity, etc.) */}
-      <div className="mt-3 flex gap-1.5">
-        {/* Placeholder tags - will be populated with real data later */}
-        {volume24h > 50000 && (
-          <span className="px-2 py-0.5 bg-neon-amber/10 text-neon-amber text-[10px] font-mono rounded">
-            HOT
-          </span>
-        )}
-        {price >= 0.9 && !isNaN(price) && (
-          <span className="px-2 py-0.5 bg-neon-green/10 text-neon-green text-[10px] font-mono rounded">
-            LIKELY
-          </span>
-        )}
-        {price <= 0.1 && !isNaN(price) && (
-          <span className="px-2 py-0.5 bg-neon-red/10 text-neon-red text-[10px] font-mono rounded">
-            UNLIKELY
-          </span>
-        )}
-        {/* Future: insider activity tag */}
-        {/* <span className="px-2 py-0.5 bg-neon-magenta/10 text-neon-magenta text-[10px] font-mono rounded">
-          INSIDER
-        </span> */}
       </div>
     </button>
   );

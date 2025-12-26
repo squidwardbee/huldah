@@ -6,6 +6,7 @@ interface OrderbookProps {
   tokenId: string;
   onPriceClick?: (price: number) => void;
   onBestPricesChange?: (bestBid: number | undefined, bestAsk: number | undefined) => void;
+  compact?: boolean;
 }
 
 interface OrderLevel {
@@ -13,7 +14,7 @@ interface OrderLevel {
   size: string;
 }
 
-export function Orderbook({ tokenId, onPriceClick, onBestPricesChange }: OrderbookProps) {
+export function Orderbook({ tokenId, onPriceClick, onBestPricesChange, compact = false }: OrderbookProps) {
   const { data, isLoading, error } = useQuery({
     queryKey: ['orderbook', tokenId],
     queryFn: () => getOrderbook(tokenId),
@@ -67,8 +68,9 @@ export function Orderbook({ tokenId, onPriceClick, onBestPricesChange }: Orderbo
     );
   }
 
-  const asks: OrderLevel[] = data?.asks?.slice(0, 8) || [];
-  const bids: OrderLevel[] = data?.bids?.slice(0, 8) || [];
+  const maxLevels = compact ? 5 : 8;
+  const asks: OrderLevel[] = data?.asks?.slice(0, maxLevels) || [];
+  const bids: OrderLevel[] = data?.bids?.slice(0, maxLevels) || [];
 
   // Find max size for bar width calculation
   const maxSize = Math.max(
@@ -82,11 +84,11 @@ export function Orderbook({ tokenId, onPriceClick, onBestPricesChange }: Orderbo
     : 0;
 
   return (
-    <div className="bg-terminal-surface/80 border border-terminal-border rounded-lg overflow-hidden">
+    <div className={`bg-terminal-surface/80 border border-terminal-border overflow-hidden flex flex-col ${compact ? 'h-full rounded-none border-x-0' : 'rounded-lg'}`}>
       {/* Header */}
-      <div className="flex items-center justify-between px-4 py-3 border-b border-terminal-border">
-        <h3 className="text-white font-mono text-sm font-semibold">ORDERBOOK</h3>
-        <div className="text-terminal-muted text-xs">
+      <div className={`flex items-center justify-between px-3 border-b border-terminal-border shrink-0 ${compact ? 'py-2' : 'py-3 px-4'}`}>
+        <h3 className="text-white font-mono text-xs font-semibold">ORDERBOOK</h3>
+        <div className="text-terminal-muted text-[10px]">
           Spread: <span className="text-neon-amber">{spread.toFixed(1)}¢</span>
         </div>
       </div>

@@ -4,11 +4,12 @@ interface PriceChartProps {
   tokenId: string;
   yesPrice?: number;
   noPrice?: number;
+  fullHeight?: boolean;
 }
 
 type ChartView = 'yes' | 'no' | 'both';
 
-export function PriceChart({ tokenId, yesPrice = 0.5, noPrice = 0.5 }: PriceChartProps) {
+export function PriceChart({ tokenId, yesPrice = 0.5, noPrice = 0.5, fullHeight = false }: PriceChartProps) {
   const [view, setView] = useState<ChartView>('both');
   const [priceHistory, setPriceHistory] = useState<{ yes: number; no: number }[]>([]);
 
@@ -54,13 +55,13 @@ export function PriceChart({ tokenId, yesPrice = 0.5, noPrice = 0.5 }: PriceChar
 
   if (!tokenId) {
     return (
-      <div className="bg-terminal-surface/80 border border-terminal-border rounded-lg p-6 h-64 flex items-center justify-center">
+      <div className={`bg-terminal-surface/80 border border-terminal-border rounded-lg p-6 flex items-center justify-center ${fullHeight ? 'h-full' : 'h-64'}`}>
         <span className="text-terminal-muted text-sm">Select a market to view chart</span>
       </div>
     );
   }
 
-  const chartHeight = 160;
+  const chartHeight = fullHeight ? 300 : 160;
 
   // Generate SVG path
   const generatePath = (prices: number[], color: string) => {
@@ -86,9 +87,9 @@ export function PriceChart({ tokenId, yesPrice = 0.5, noPrice = 0.5 }: PriceChar
   };
 
   return (
-    <div className="bg-terminal-surface/80 border border-terminal-border rounded-lg overflow-hidden">
+    <div className={`bg-terminal-surface/80 border border-terminal-border rounded-lg overflow-hidden flex flex-col ${fullHeight ? 'h-full' : ''}`}>
       {/* Header with view toggles */}
-      <div className="px-4 py-3 border-b border-terminal-border flex items-center justify-between">
+      <div className="px-4 py-2 border-b border-terminal-border flex items-center justify-between shrink-0">
         <h3 className="text-white font-mono text-sm font-semibold">PRICE</h3>
         <div className="flex gap-1">
           {(['yes', 'no', 'both'] as const).map((v) => (
@@ -110,8 +111,8 @@ export function PriceChart({ tokenId, yesPrice = 0.5, noPrice = 0.5 }: PriceChar
       </div>
 
       {/* Chart */}
-      <div className="p-4">
-        <div className="relative" style={{ height: chartHeight }}>
+      <div className={`p-4 ${fullHeight ? 'flex-1 min-h-0' : ''}`}>
+        <div className={`relative ${fullHeight ? 'h-full' : ''}`} style={fullHeight ? {} : { height: chartHeight }}>
           {/* Y-axis labels */}
           <div className="absolute left-0 top-0 bottom-0 w-10 flex flex-col justify-between text-[10px] text-terminal-muted font-mono">
             <span>{(maxPrice * 100).toFixed(0)}¢</span>
