@@ -87,11 +87,10 @@ export function Orderbook({ tokenId, onPriceClick, onBestPricesChange, compact =
   if (compact) {
     return (
       <div className="bg-terminal-surface/80 overflow-hidden flex flex-col h-full">
-        {/* Header */}
-        <div className="flex items-center justify-between px-2 py-1 border-b border-terminal-border shrink-0">
-          <span className="text-white font-mono text-[10px] font-semibold">BOOK</span>
+        {/* Header - spread only */}
+        <div className="flex items-center justify-end px-2 py-1 border-b border-terminal-border shrink-0">
           <span className="text-terminal-muted text-[10px]">
-            <span className="text-neon-amber">{spread.toFixed(1)}¢</span>
+            Spread: <span className="text-neon-amber">{spread.toFixed(1)}¢</span>
           </span>
         </div>
 

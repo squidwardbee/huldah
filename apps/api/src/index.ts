@@ -921,11 +921,129 @@ app.get('/api/user/me', authMiddleware, async (req, res) => {
   }
 });
 
-// Get user's positions
+// Get user's live positions from Polymarket (via Goldsky subgraph)
 app.get('/api/user/positions', authMiddleware, async (req, res) => {
   try {
-    const positions = await userManager.getUserPositions(req.user!.id);
-    res.json(positions);
+    // Get proxy wallet from query param or user record
+    let proxyWallet = req.query.proxyWallet as string;
+
+    if (!proxyWallet) {
+      // Fall back to stored proxy address in user record
+      const user = await userManager.getUserById(req.user!.id);
+      proxyWallet = user?.proxyAddress || '';
+    }
+
+    if (!proxyWallet) {
+      return res.json([]); // No proxy wallet, no positions
+    }
+
+    console.log('[Positions] Fetching for proxy wallet:', proxyWallet);
+
+    // Check Redis cache first (30 second TTL)
+    const cacheKey = `positions:${proxyWallet.toLowerCase()}`;
+    const cached = await redis.get(cacheKey);
+    if (cached) {
+      console.log('[Positions] Returning cached positions');
+      return res.json(JSON.parse(cached));
+    }
+
+    // Fetch positions from Goldsky subgraph
+    const rawPositions = await subgraphClient.getWalletPositions(proxyWallet);
+
+    // Filter to only non-zero positions
+    const activePositions = rawPositions.filter(p => parseFloat(p.balance) > 0.001);
+
+    if (activePositions.length === 0) {
+      await redis.setex(cacheKey, 30, JSON.stringify([]));
+      return res.json([]);
+    }
+
+    // Get unique condition IDs to look up markets
+    const conditionIds = [...new Set(activePositions.map(p => p.condition))];
+
+    // Batch lookup markets from database
+    const marketsResult = await db.query(`
+      SELECT condition_id, question, slug, image_url, yes_token_id, no_token_id, outcome_yes_price, outcome_no_price
+      FROM markets
+      WHERE condition_id = ANY($1)
+    `, [conditionIds]);
+
+    const marketMap = new Map(marketsResult.rows.map(m => [m.condition_id, m]));
+
+    // Enrich positions with market data and current prices
+    const enrichedPositions = await Promise.all(
+      activePositions.map(async (pos) => {
+        const market = marketMap.get(pos.condition);
+        const isYes = pos.outcomeIndex === 1;
+        const tokenId = isYes ? market?.yes_token_id : market?.no_token_id;
+
+        // Get current price - try from market table first, then CLOB
+        let currentPrice = isYes
+          ? (market?.outcome_yes_price || 0.5)
+          : (market?.outcome_no_price || 0.5);
+
+        // Try to get live price from CLOB (with caching)
+        if (tokenId) {
+          try {
+            const priceCacheKey = `price:${tokenId}`;
+            const cachedPrice = await redis.get(priceCacheKey);
+
+            if (cachedPrice) {
+              currentPrice = parseFloat(cachedPrice);
+            } else {
+              const bookResponse = await clobClient.get('/book', {
+                params: { token_id: tokenId }
+              });
+              const { bids, asks } = bookResponse.data;
+              const bestBid = bids?.[0]?.price ? parseFloat(bids[0].price) : null;
+              const bestAsk = asks?.[0]?.price ? parseFloat(asks[0].price) : null;
+
+              if (bestBid !== null && bestAsk !== null) {
+                currentPrice = (bestBid + bestAsk) / 2;
+              } else if (bestBid !== null) {
+                currentPrice = bestBid;
+              } else if (bestAsk !== null) {
+                currentPrice = bestAsk;
+              }
+
+              // Cache price for 10 seconds
+              await redis.setex(priceCacheKey, 10, currentPrice.toString());
+            }
+          } catch (priceErr) {
+            console.error('[Positions] Failed to fetch price for', tokenId, priceErr);
+          }
+        }
+
+        const size = parseFloat(pos.balance);
+        const avgPrice = parseFloat(pos.averagePrice);
+
+        // Calculate unrealized PnL
+        // For YES: profit if current price > avg price
+        // For NO: profit if current price < avg price (because NO price = 1 - YES price)
+        const unrealizedPnl = isYes
+          ? (currentPrice - avgPrice) * size
+          : (avgPrice - currentPrice) * size;
+
+        return {
+          tokenId: tokenId || pos.condition,
+          conditionId: pos.condition,
+          marketQuestion: market?.question || `Market ${pos.condition.slice(0, 8)}...`,
+          outcome: isYes ? 'YES' : 'NO',
+          size,
+          avgPrice,
+          currentPrice,
+          unrealizedPnl,
+          realizedPnl: parseFloat(pos.realizedPnl),
+          marketSlug: market?.slug,
+        };
+      })
+    );
+
+    // Cache enriched positions for 30 seconds
+    await redis.setex(cacheKey, 30, JSON.stringify(enrichedPositions));
+
+    console.log('[Positions] Returning', enrichedPositions.length, 'positions');
+    res.json(enrichedPositions);
   } catch (err) {
     console.error('Error fetching positions:', err);
     res.status(500).json({ error: 'Failed to fetch positions' });

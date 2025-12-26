@@ -190,15 +190,11 @@ export function OrderForm({
   if (compact) {
     return (
       <div className="bg-terminal-surface/80 border-terminal-border overflow-hidden h-full flex flex-col text-xs">
-        {/* Header with balance */}
-        <div className="px-2 py-1 border-b border-terminal-border shrink-0 flex items-center justify-between">
-          <div className="flex items-center gap-2">
-            <span className="text-white font-mono font-semibold text-[10px]">ORDER</span>
-            <span className={`text-[10px] font-mono ${walletTrading.isReady ? 'text-neon-green' : 'text-terminal-muted'}`}>
-              {walletTrading.isReady ? '●' : '○'}
-            </span>
-          </div>
-          <span className="text-neon-cyan font-mono text-[10px]">{formattedBalance}</span>
+        {/* Header with status indicator */}
+        <div className="px-2 py-1 border-b border-terminal-border shrink-0 flex items-center justify-end">
+          <span className={`text-[10px] font-mono ${walletTrading.isReady ? 'text-neon-green' : 'text-terminal-muted'}`}>
+            {walletTrading.isReady ? '● READY' : '○ NOT READY'}
+          </span>
         </div>
 
         {/* Buy/Sell Toggle */}
@@ -249,6 +245,10 @@ export function OrderForm({
 
           {/* Summary */}
           <div className="bg-terminal-bg rounded p-1.5 space-y-0.5 text-[10px]">
+            <div className="flex justify-between">
+              <span className="text-terminal-muted">Balance</span>
+              <span className="text-neon-cyan font-mono">{formattedBalance}</span>
+            </div>
             <div className="flex justify-between">
               <span className="text-terminal-muted">Cost</span>
               <span className="text-white font-mono">${cost.toFixed(2)}</span>

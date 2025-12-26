@@ -319,22 +319,21 @@ export function TradingView({ initialMarket, onMarketCleared }: TradingViewProps
               onCollapse={() => setOrderbookCollapsed(true)}
               onExpand={() => setOrderbookCollapsed(false)}
             >
-              <div className="h-full flex flex-col border-r border-terminal-border overflow-hidden">
+              <div className="h-full flex flex-col border-r border-terminal-border overflow-hidden relative">
                 <PanelHeader
-                  title="Book"
+                  title=""
                   collapsed={orderbookCollapsed}
                   onToggle={() => setOrderbookCollapsed(!orderbookCollapsed)}
                 />
-                {!orderbookCollapsed && (
-                  <div className="flex-1 overflow-hidden">
-                    <Orderbook
-                      tokenId={activeTokenId}
-                      onPriceClick={handlePriceClick}
-                      onBestPricesChange={handleBestPricesChange}
-                      compact
-                    />
-                  </div>
-                )}
+                {/* Always render Orderbook - use absolute positioning when collapsed to keep fetching */}
+                <div className={orderbookCollapsed ? 'absolute opacity-0 pointer-events-none' : 'flex-1 overflow-hidden'}>
+                  <Orderbook
+                    tokenId={activeTokenId}
+                    onPriceClick={handlePriceClick}
+                    onBestPricesChange={handleBestPricesChange}
+                    compact
+                  />
+                </div>
                 {orderbookCollapsed && (
                   <div className="flex-1 flex items-center justify-center">
                     <span
@@ -362,7 +361,7 @@ export function TradingView({ initialMarket, onMarketCleared }: TradingViewProps
             >
               <div className="h-full flex flex-col overflow-hidden">
                 <PanelHeader
-                  title="Trade"
+                  title=""
                   collapsed={orderFormCollapsed}
                   onToggle={() => setOrderFormCollapsed(!orderFormCollapsed)}
                 />
