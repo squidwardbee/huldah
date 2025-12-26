@@ -68,7 +68,7 @@ export function Orderbook({ tokenId, onPriceClick, onBestPricesChange, compact =
     );
   }
 
-  const maxLevels = compact ? 5 : 8;
+  const maxLevels = compact ? 4 : 8;
   const asks: OrderLevel[] = data?.asks?.slice(0, maxLevels) || [];
   const bids: OrderLevel[] = data?.bids?.slice(0, maxLevels) || [];
 
@@ -79,14 +79,74 @@ export function Orderbook({ tokenId, onPriceClick, onBestPricesChange, compact =
     1
   );
 
-  const spread = asks[0] && bids[0] 
+  const spread = asks[0] && bids[0]
     ? (parseFloat(asks[0].price) - parseFloat(bids[0].price)) * 100
     : 0;
 
+  // Compact mode: minimal height orderbook
+  if (compact) {
+    return (
+      <div className="bg-terminal-surface/80 overflow-hidden flex flex-col h-full">
+        {/* Header */}
+        <div className="flex items-center justify-between px-2 py-1 border-b border-terminal-border shrink-0">
+          <span className="text-white font-mono text-[10px] font-semibold">BOOK</span>
+          <span className="text-terminal-muted text-[10px]">
+            <span className="text-neon-amber">{spread.toFixed(1)}¢</span>
+          </span>
+        </div>
+
+        {/* Asks */}
+        <div className="flex-1 flex flex-col justify-end overflow-hidden">
+          {asks.slice().reverse().map((ask, i) => {
+            const size = parseFloat(ask.size);
+            const price = parseFloat(ask.price);
+            const barWidth = (size / maxSize) * 100;
+            return (
+              <button key={`ask-${i}`} onClick={() => onPriceClick?.(price)}
+                className="w-full grid grid-cols-2 px-2 py-0.5 relative hover:bg-neon-red/10 text-left">
+                <div className="absolute right-0 top-0 bottom-0 bg-neon-red/10" style={{ width: `${barWidth}%` }} />
+                <span className="relative text-neon-red font-mono text-[10px]">{(price * 100).toFixed(1)}¢</span>
+                <span className="relative text-right text-white/60 font-mono text-[10px]">{size.toFixed(0)}</span>
+              </button>
+            );
+          })}
+        </div>
+
+        {/* Spread */}
+        <div className="px-2 py-1 bg-terminal-bg/50 border-y border-terminal-border text-center shrink-0">
+          <span className="text-white font-mono font-bold text-[10px]">
+            {asks[0] && bids[0] ? (((parseFloat(asks[0].price) + parseFloat(bids[0].price)) / 2) * 100).toFixed(1) : '—'}¢
+          </span>
+        </div>
+
+        {/* Bids */}
+        <div className="flex-1 flex flex-col overflow-hidden">
+          {bids.map((bid, i) => {
+            const size = parseFloat(bid.size);
+            const price = parseFloat(bid.price);
+            const barWidth = (size / maxSize) * 100;
+            return (
+              <button key={`bid-${i}`} onClick={() => onPriceClick?.(price)}
+                className="w-full grid grid-cols-2 px-2 py-0.5 relative hover:bg-neon-green/10 text-left">
+                <div className="absolute right-0 top-0 bottom-0 bg-neon-green/10" style={{ width: `${barWidth}%` }} />
+                <span className="relative text-neon-green font-mono text-[10px]">{(price * 100).toFixed(1)}¢</span>
+                <span className="relative text-right text-white/60 font-mono text-[10px]">{size.toFixed(0)}</span>
+              </button>
+            );
+          })}
+        </div>
+
+        {asks.length === 0 && bids.length === 0 && (
+          <div className="p-2 text-center text-terminal-muted text-[10px]">Empty</div>
+        )}
+      </div>
+    );
+  }
+
   return (
-    <div className={`bg-terminal-surface/80 border border-terminal-border overflow-hidden flex flex-col ${compact ? 'h-full rounded-none border-x-0' : 'rounded-lg'}`}>
+    <div className="bg-terminal-surface/80 border border-terminal-border overflow-hidden flex flex-col rounded-lg">
       {/* Header */}
-      <div className={`flex items-center justify-between px-3 border-b border-terminal-border shrink-0 ${compact ? 'py-2' : 'py-3 px-4'}`}>
+      <div className="flex items-center justify-between py-3 px-4 border-b border-terminal-border shrink-0">
         <h3 className="text-white font-mono text-xs font-semibold">ORDERBOOK</h3>
         <div className="text-terminal-muted text-[10px]">
           Spread: <span className="text-neon-amber">{spread.toFixed(1)}¢</span>
@@ -105,7 +165,7 @@ export function Orderbook({ tokenId, onPriceClick, onBestPricesChange, compact =
           const size = parseFloat(ask.size);
           const price = parseFloat(ask.price);
           const barWidth = (size / maxSize) * 100;
-          
+
           return (
             <button
               key={`ask-${i}`}
@@ -117,11 +177,11 @@ export function Orderbook({ tokenId, onPriceClick, onBestPricesChange, compact =
               "
             >
               {/* Background bar */}
-              <div 
+              <div
                 className="absolute right-0 top-0 bottom-0 bg-neon-red/10"
                 style={{ width: `${barWidth}%` }}
               />
-              
+
               <span className="relative text-neon-red font-mono text-sm">
                 {(price * 100).toFixed(1)}¢
               </span>
@@ -138,7 +198,7 @@ export function Orderbook({ tokenId, onPriceClick, onBestPricesChange, compact =
         <div className="flex items-center justify-center gap-2 text-xs">
           <span className="text-terminal-muted">MID</span>
           <span className="text-white font-mono font-bold">
-            {asks[0] && bids[0] 
+            {asks[0] && bids[0]
               ? (((parseFloat(asks[0].price) + parseFloat(bids[0].price)) / 2) * 100).toFixed(1)
               : '—'
             }¢
@@ -152,7 +212,7 @@ export function Orderbook({ tokenId, onPriceClick, onBestPricesChange, compact =
           const size = parseFloat(bid.size);
           const price = parseFloat(bid.price);
           const barWidth = (size / maxSize) * 100;
-          
+
           return (
             <button
               key={`bid-${i}`}
@@ -164,11 +224,11 @@ export function Orderbook({ tokenId, onPriceClick, onBestPricesChange, compact =
               "
             >
               {/* Background bar */}
-              <div 
+              <div
                 className="absolute right-0 top-0 bottom-0 bg-neon-green/10"
                 style={{ width: `${barWidth}%` }}
               />
-              
+
               <span className="relative text-neon-green font-mono text-sm">
                 {(price * 100).toFixed(1)}¢
               </span>

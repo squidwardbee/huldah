@@ -1,169 +1,288 @@
-import { useState, useEffect, useMemo } from 'react';
+import { useState, useEffect, useRef, useMemo } from 'react';
+import { useQuery } from '@tanstack/react-query';
+import { createChart, ColorType, LineStyle, LineSeries, CandlestickSeries, type IChartApi, type ISeriesApi, type Time } from 'lightweight-charts';
+import { getPriceHistory, type PriceHistoryPoint } from '../../lib/tradingApi';
 
 interface PriceChartProps {
   tokenId: string;
-  yesPrice?: number;
-  noPrice?: number;
-  fullHeight?: boolean;
+  outcome?: 'YES' | 'NO';
 }
 
-type ChartView = 'yes' | 'no' | 'both';
+type ChartType = 'line' | 'candle';
+type TimeInterval = '1h' | '6h' | '1d' | '1w' | 'max';
 
-export function PriceChart({ tokenId, yesPrice = 0.5, noPrice = 0.5, fullHeight = false }: PriceChartProps) {
-  const [view, setView] = useState<ChartView>('both');
-  const [priceHistory, setPriceHistory] = useState<{ yes: number; no: number }[]>([]);
+interface CandleData {
+  time: Time;
+  open: number;
+  high: number;
+  low: number;
+  close: number;
+}
 
-  // Build simulated history when prices change
+// Aggregate price history into OHLC candles
+function aggregateToCandles(history: PriceHistoryPoint[], candleIntervalMinutes: number): CandleData[] {
+  if (history.length === 0) return [];
+
+  const candleIntervalMs = candleIntervalMinutes * 60 * 1000;
+  const candles: CandleData[] = [];
+  let currentCandle: CandleData | null = null;
+  let currentCandleTime = 0;
+
+  for (const point of history) {
+    const candleStart = Math.floor(point.t * 1000 / candleIntervalMs) * candleIntervalMs / 1000;
+
+    if (!currentCandle || currentCandleTime !== candleStart) {
+      if (currentCandle) {
+        candles.push(currentCandle);
+      }
+      currentCandleTime = candleStart;
+      currentCandle = {
+        time: candleStart as Time,
+        open: point.p,
+        high: point.p,
+        low: point.p,
+        close: point.p,
+      };
+    } else {
+      currentCandle.high = Math.max(currentCandle.high, point.p);
+      currentCandle.low = Math.min(currentCandle.low, point.p);
+      currentCandle.close = point.p;
+    }
+  }
+
+  if (currentCandle) {
+    candles.push(currentCandle);
+  }
+
+  return candles;
+}
+
+export function PriceChart({ tokenId, outcome = 'YES' }: PriceChartProps) {
+  const lineColor = outcome === 'YES' ? '#00ff88' : '#ff3366';
+  const upColor = outcome === 'YES' ? '#00ff88' : '#ff3366';
+  const downColor = outcome === 'YES' ? '#ff3366' : '#00ff88';
+  const [chartType, setChartType] = useState<ChartType>('line');
+  const [interval, setInterval] = useState<TimeInterval>('1d');
+
+  const chartContainerRef = useRef<HTMLDivElement>(null);
+  const chartRef = useRef<IChartApi | null>(null);
+  const seriesRef = useRef<ISeriesApi<'Line'> | ISeriesApi<'Candlestick'> | null>(null);
+
+  // Fetch historical price data
+  const { data: priceHistory = [], isLoading } = useQuery({
+    queryKey: ['priceHistory', tokenId, interval],
+    queryFn: () => getPriceHistory(tokenId, interval),
+    enabled: !!tokenId,
+    staleTime: 60000,
+    refetchInterval: 30000,
+  });
+
+  // Convert price history to chart data
+  const chartData = useMemo(() => {
+    if (priceHistory.length === 0) return { line: [], candles: [] };
+
+    // Sort by timestamp and deduplicate (keep last value for each timestamp)
+    const sorted = [...priceHistory].sort((a, b) => a.t - b.t);
+    const deduped: PriceHistoryPoint[] = [];
+    for (const point of sorted) {
+      if (deduped.length === 0 || deduped[deduped.length - 1].t < point.t) {
+        deduped.push(point);
+      } else {
+        // Same timestamp - update with latest value
+        deduped[deduped.length - 1] = point;
+      }
+    }
+
+    // Line data: convert timestamps to Time type
+    const lineData = deduped.map(p => ({
+      time: p.t as Time,
+      value: p.p,
+    }));
+
+    // Candle interval based on selected timeframe
+    const candleMinutes = interval === '1h' ? 5 : interval === '6h' ? 15 : interval === '1d' ? 60 : 240;
+    const candles = aggregateToCandles(deduped, candleMinutes);
+
+    return { line: lineData, candles };
+  }, [priceHistory, interval]);
+
+  // Initialize and update chart
   useEffect(() => {
-    if (!tokenId) {
-      setPriceHistory([]);
-      return;
+    if (!chartContainerRef.current) return;
+
+    // Create chart
+    const chart = createChart(chartContainerRef.current, {
+      layout: {
+        background: { type: ColorType.Solid, color: 'transparent' },
+        textColor: '#666',
+        fontFamily: 'JetBrains Mono, monospace',
+      },
+      grid: {
+        vertLines: { color: 'rgba(255,255,255,0.05)' },
+        horzLines: { color: 'rgba(255,255,255,0.05)' },
+      },
+      crosshair: {
+        vertLine: { color: '#00fff5', width: 1, style: LineStyle.Dashed },
+        horzLine: { color: '#00fff5', width: 1, style: LineStyle.Dashed },
+      },
+      rightPriceScale: {
+        borderColor: 'rgba(255,255,255,0.1)',
+        scaleMargins: { top: 0.1, bottom: 0.1 },
+      },
+      timeScale: {
+        borderColor: 'rgba(255,255,255,0.1)',
+        timeVisible: true,
+        secondsVisible: false,
+      },
+      handleScroll: { mouseWheel: true, pressedMouseMove: true },
+      handleScale: { mouseWheel: true, pinch: true },
+    });
+
+    chartRef.current = chart;
+
+    // Handle resize
+    const handleResize = () => {
+      if (chartContainerRef.current) {
+        chart.applyOptions({
+          width: chartContainerRef.current.clientWidth,
+          height: chartContainerRef.current.clientHeight,
+        });
+      }
+    };
+
+    handleResize();
+    window.addEventListener('resize', handleResize);
+    const resizeObserver = new ResizeObserver(handleResize);
+    resizeObserver.observe(chartContainerRef.current);
+
+    return () => {
+      window.removeEventListener('resize', handleResize);
+      resizeObserver.disconnect();
+      chart.remove();
+      chartRef.current = null;
+      seriesRef.current = null;
+    };
+  }, [tokenId]);
+
+  // Update chart series when data or chart type changes
+  useEffect(() => {
+    if (!chartRef.current) return;
+
+    // Remove existing series
+    if (seriesRef.current) {
+      chartRef.current.removeSeries(seriesRef.current);
+      seriesRef.current = null;
     }
 
-    // Generate price history that trends toward current price
-    const history: { yes: number; no: number }[] = [];
-    const startYes = 0.5;
-    const targetYes = yesPrice;
-    
-    for (let i = 0; i < 25; i++) {
-      // Interpolate from 0.5 toward current price with some noise
-      const progress = i / 24;
-      const noise = (Math.random() - 0.5) * 0.08;
-      const yes = Math.max(0.01, Math.min(0.99, startYes + (targetYes - startYes) * progress + noise));
-      history.push({ yes, no: 1 - yes });
-    }
-    
-    // Ensure last point is exactly the current price
-    history[history.length - 1] = { yes: yesPrice, no: noPrice };
-    
-    setPriceHistory(history);
-  }, [tokenId, yesPrice, noPrice]);
+    if (chartType === 'line') {
+      const lineSeries = chartRef.current.addSeries(LineSeries, {
+        color: lineColor,
+        lineWidth: 2,
+        priceFormat: { type: 'price', precision: 2, minMove: 0.01 },
+      });
 
-  // Calculate chart bounds
-  const { minPrice, maxPrice, priceRange } = useMemo(() => {
-    if (priceHistory.length === 0) {
-      return { minPrice: 0.3, maxPrice: 0.7, priceRange: 0.4 };
+      if (chartData.line.length > 0) {
+        // Ensure line data is sorted (already deduplicated in useMemo)
+        const sortedLine = [...chartData.line].sort((a, b) => (a.time as unknown as number) - (b.time as unknown as number));
+        lineSeries.setData(sortedLine);
+      }
+      seriesRef.current = lineSeries;
+    } else {
+      const candleSeries = chartRef.current.addSeries(CandlestickSeries, {
+        upColor: upColor,
+        downColor: downColor,
+        borderUpColor: upColor,
+        borderDownColor: downColor,
+        wickUpColor: upColor,
+        wickDownColor: downColor,
+        priceFormat: { type: 'price', precision: 2, minMove: 0.01 },
+      });
+
+      if (chartData.candles.length > 0) {
+        // Ensure candles are sorted and deduplicated
+        const sortedCandles = [...chartData.candles].sort((a, b) => (a.time as unknown as number) - (b.time as unknown as number));
+        const dedupedCandles: CandleData[] = [];
+        for (const candle of sortedCandles) {
+          if (dedupedCandles.length === 0 || (dedupedCandles[dedupedCandles.length - 1].time as unknown as number) < (candle.time as unknown as number)) {
+            dedupedCandles.push(candle);
+          }
+        }
+        candleSeries.setData(dedupedCandles);
+      }
+      seriesRef.current = candleSeries;
     }
-    
-    const allPrices = priceHistory.flatMap(p => 
-      view === 'yes' ? [p.yes] : view === 'no' ? [p.no] : [p.yes, p.no]
-    );
-    const min = Math.max(0, Math.min(...allPrices) - 0.05);
-    const max = Math.min(1, Math.max(...allPrices) + 0.05);
-    return { minPrice: min, maxPrice: max, priceRange: max - min || 0.1 };
-  }, [priceHistory, view]);
+
+    // Fit content
+    chartRef.current.timeScale().fitContent();
+  }, [chartType, chartData, lineColor, upColor, downColor]);
 
   if (!tokenId) {
     return (
-      <div className={`bg-terminal-surface/80 border border-terminal-border rounded-lg p-6 flex items-center justify-center ${fullHeight ? 'h-full' : 'h-64'}`}>
+      <div className="bg-terminal-surface/80 border border-terminal-border rounded-lg p-6 flex items-center justify-center h-full">
         <span className="text-terminal-muted text-sm">Select a market to view chart</span>
       </div>
     );
   }
 
-  const chartHeight = fullHeight ? 300 : 160;
-
-  // Generate SVG path
-  const generatePath = (prices: number[], color: string) => {
-    if (prices.length < 2) return null;
-    
-    const points = prices.map((price, i) => {
-      const x = (i / (prices.length - 1)) * 100;
-      const y = ((maxPrice - price) / priceRange) * chartHeight;
-      return `${x},${y}`;
-    });
-    
-    return (
-      <polyline
-        key={color}
-        points={points.join(' ')}
-        fill="none"
-        stroke={color}
-        strokeWidth="2"
-        strokeLinecap="round"
-        strokeLinejoin="round"
-      />
-    );
-  };
-
   return (
-    <div className={`bg-terminal-surface/80 border border-terminal-border rounded-lg overflow-hidden flex flex-col ${fullHeight ? 'h-full' : ''}`}>
-      {/* Header with view toggles */}
-      <div className="px-4 py-2 border-b border-terminal-border flex items-center justify-between shrink-0">
-        <h3 className="text-white font-mono text-sm font-semibold">PRICE</h3>
+    <div className="bg-terminal-surface/80 border border-terminal-border rounded-lg overflow-hidden flex flex-col h-full">
+      {/* Header with controls - compact */}
+      <div className="px-2 py-1 border-b border-terminal-border flex items-center justify-between shrink-0">
+        <div className="flex items-center gap-2">
+          {/* Time interval selector */}
+          <div className="flex">
+            {(['1h', '6h', '1d', '1w'] as const).map((int) => (
+              <button
+                key={int}
+                onClick={() => setInterval(int)}
+                className={`px-1.5 py-0.5 text-[9px] font-mono transition-all ${
+                  interval === int
+                    ? 'text-neon-cyan'
+                    : 'text-terminal-muted hover:text-white'
+                }`}
+              >
+                {int.toUpperCase()}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        {/* Chart type selector */}
         <div className="flex gap-1">
-          {(['yes', 'no', 'both'] as const).map((v) => (
-            <button
-              key={v}
-              onClick={() => setView(v)}
-              className={`px-3 py-1 text-xs font-mono rounded transition-all ${
-                view === v
-                  ? v === 'yes' ? 'bg-neon-green/20 text-neon-green border border-neon-green/50'
-                    : v === 'no' ? 'bg-neon-red/20 text-neon-red border border-neon-red/50'
-                    : 'bg-neon-cyan/20 text-neon-cyan border border-neon-cyan/50'
-                  : 'text-terminal-muted hover:text-white'
-              }`}
-            >
-              {v.toUpperCase()}
-            </button>
-          ))}
+          <button
+            onClick={() => setChartType('line')}
+            className={`px-1.5 py-0.5 text-[9px] font-mono transition-all ${
+              chartType === 'line' ? 'text-neon-green' : 'text-terminal-muted hover:text-white'
+            }`}
+          >
+            LINE
+          </button>
+          <button
+            onClick={() => setChartType('candle')}
+            className={`px-1.5 py-0.5 text-[9px] font-mono transition-all ${
+              chartType === 'candle' ? 'text-neon-amber' : 'text-terminal-muted hover:text-white'
+            }`}
+          >
+            CANDLE
+          </button>
         </div>
       </div>
 
-      {/* Chart */}
-      <div className={`p-4 ${fullHeight ? 'flex-1 min-h-0' : ''}`}>
-        <div className={`relative ${fullHeight ? 'h-full' : ''}`} style={fullHeight ? {} : { height: chartHeight }}>
-          {/* Y-axis labels */}
-          <div className="absolute left-0 top-0 bottom-0 w-10 flex flex-col justify-between text-[10px] text-terminal-muted font-mono">
-            <span>{(maxPrice * 100).toFixed(0)}¢</span>
-            <span>{((maxPrice + minPrice) / 2 * 100).toFixed(0)}¢</span>
-            <span>{(minPrice * 100).toFixed(0)}¢</span>
+      {/* Chart container */}
+      <div className="flex-1 relative min-h-0">
+        {isLoading && (
+          <div className="absolute inset-0 flex items-center justify-center bg-terminal-surface/80 z-10">
+            <div className="text-terminal-muted text-xs animate-pulse">Loading...</div>
           </div>
+        )}
 
-          {/* Chart area */}
-          <div className="ml-12 h-full relative">
-            {/* Grid lines */}
-            <div className="absolute inset-0 flex flex-col justify-between pointer-events-none">
-              <div className="border-t border-terminal-border/20" />
-              <div className="border-t border-terminal-border/20" />
-              <div className="border-t border-terminal-border/20" />
-            </div>
-
-            {/* SVG Chart */}
-            {priceHistory.length > 0 && (
-              <svg
-                viewBox={`0 0 100 ${chartHeight}`}
-                preserveAspectRatio="none"
-                className="w-full h-full"
-              >
-                {(view === 'yes' || view === 'both') && 
-                  generatePath(priceHistory.map(p => p.yes), '#00ff88')}
-                {(view === 'no' || view === 'both') && 
-                  generatePath(priceHistory.map(p => p.no), '#ff3366')}
-              </svg>
-            )}
+        {!isLoading && priceHistory.length === 0 && (
+          <div className="absolute inset-0 flex items-center justify-center">
+            <div className="text-terminal-muted text-[10px]">No data</div>
           </div>
-        </div>
+        )}
 
-        {/* Current prices - large display */}
-        <div className="mt-4 flex gap-6 justify-center">
-          {(view === 'yes' || view === 'both') && (
-            <div className="text-center">
-              <div className="text-terminal-muted text-[10px] uppercase mb-1">Yes</div>
-              <div className="text-neon-green font-mono text-2xl font-bold">
-                {(yesPrice * 100).toFixed(1)}¢
-              </div>
-            </div>
-          )}
-          {(view === 'no' || view === 'both') && (
-            <div className="text-center">
-              <div className="text-terminal-muted text-[10px] uppercase mb-1">No</div>
-              <div className="text-neon-red font-mono text-2xl font-bold">
-                {(noPrice * 100).toFixed(1)}¢
-              </div>
-            </div>
-          )}
-        </div>
+        <div ref={chartContainerRef} className="w-full h-full" />
       </div>
     </div>
   );

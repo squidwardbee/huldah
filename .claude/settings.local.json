@@ -2,14 +2,29 @@
   "permissions": {
     "allow": [
       "Bash(find:*)",
-      "WebSearch",
-      "Bash(npm ls:*)",
+      "Bash(pnpm:*)",
+      "Bash(npm:*)",
       "Bash(npx tsc:*)",
-      "Bash(npm run build:*)",
+      "Bash(npx vitest:*)",
+      "Bash(docker-compose:*)",
+      "Bash(git status:*)",
+      "Bash(git diff:*)",
+      "Bash(git log:*)",
+      "Bash(git branch:*)",
+      "Bash(git checkout:*)",
+      "Bash(git add:*)",
+      "Bash(git commit:*)",
+      "Bash(ls:*)",
+      "Bash(cat:*)",
+      "Bash(wc:*)",
+      "WebSearch",
       "WebFetch(domain:www.npmjs.com)",
       "WebFetch(domain:raw.githubusercontent.com)",
       "WebFetch(domain:docs.polymarket.com)",
-      "WebFetch(domain:github.com)"
+      "WebFetch(domain:github.com)",
+      "WebFetch(domain:viem.sh)",
+      "WebFetch(domain:tanstack.com)",
+      "WebFetch(domain:tailwindcss.com)"
     ]
   }
 }

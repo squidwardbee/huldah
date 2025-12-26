@@ -1,6 +1,6 @@
-import { useQuery } from '@tanstack/react-query';
-import { useMemo } from 'react';
-import { getMarkets, type Market } from '../../lib/tradingApi';
+import { useInfiniteQuery } from '@tanstack/react-query';
+import { useState, useMemo, useRef, useCallback, useEffect } from 'react';
+import { getMarkets, type Market, type SortBy } from '../../lib/tradingApi';
 
 interface MarketGridProps {
   onSelectMarket: (market: Market) => void;
@@ -19,61 +19,200 @@ function formatVolume(volume: number | string | null | undefined): string {
 // Default image for markets without one
 const DEFAULT_IMAGE = 'https://polymarket.com/images/default-market.png';
 
+const PAGE_SIZE = 100; // Fetch 100 at a time
+
+// Category definitions with display names
+const CATEGORIES = [
+  { id: 'trending', label: 'Trending' },
+  { id: 'breaking', label: 'Breaking' },
+  { id: 'new', label: 'New' },
+  { id: 'Politics', label: 'Politics' },
+  { id: 'Sports', label: 'Sports' },
+  { id: 'Crypto', label: 'Crypto' },
+  { id: 'Finance', label: 'Finance' },
+  { id: 'Geopolitics', label: 'Geopolitics' },
+  { id: 'Earnings', label: 'Earnings' },
+  { id: 'Tech', label: 'Tech' },
+  { id: 'Culture', label: 'Culture' },
+  { id: 'World', label: 'World' },
+  { id: 'Economy', label: 'Economy' },
+  { id: 'Trump', label: 'Trump' },
+  { id: 'Elections', label: 'Elections' },
+  { id: 'Mentions', label: 'Mentions' },
+] as const;
+
+const SORT_OPTIONS = [
+  { id: 'volume', label: 'Volume' },
+  { id: 'volume_24h', label: '24h Volume' },
+  { id: 'ending_soon', label: 'Ending Soon' },
+  { id: 'liquidity', label: 'Liquidity' },
+  { id: 'newest', label: 'Newest' },
+] as const;
+
 export function MarketGrid({ onSelectMarket, selectedMarketId }: MarketGridProps) {
-  // Fetch all markets
-  const { data: markets = [], isLoading } = useQuery({
-    queryKey: ['markets'],
-    queryFn: () => getMarkets(300),
+  // Filter state for ALL column
+  const [sortBy, setSortBy] = useState<SortBy>('volume');
+  const [selectedCategory, setSelectedCategory] = useState<string | null>(null);
+  const [showFilters, setShowFilters] = useState(false);
+  const [activeFilterMenu, setActiveFilterMenu] = useState<'sort' | 'category' | null>(null);
+
+  // Infinite query for markets
+  const {
+    data,
+    isLoading,
+    fetchNextPage,
+    hasNextPage,
+    isFetchingNextPage,
+  } = useInfiniteQuery({
+    queryKey: ['markets-infinite', sortBy, selectedCategory],
+    queryFn: async ({ pageParam = 0 }) => {
+      // For special categories, we need to handle differently
+      const apiCategory = ['trending', 'breaking', 'new'].includes(selectedCategory || '')
+        ? undefined
+        : selectedCategory;
+
+      const response = await getMarkets({
+        limit: PAGE_SIZE,
+        offset: pageParam,
+        category: apiCategory || undefined,
+        sortBy: sortBy,
+      });
+      return response;
+    },
+    getNextPageParam: (lastPage) => {
+      // Keep fetching until no more data
+      if (lastPage.pagination.hasMore) {
+        return lastPage.pagination.offset + lastPage.pagination.limit;
+      }
+      return undefined;
+    },
+    initialPageParam: 0,
     staleTime: 30000,
   });
 
-  // Sort markets into columns
-  const { newMarkets, trendingMarkets, almostResolvedMarkets } = useMemo(() => {
-    const now = Date.now();
-    const threeDaysFromNow = now + 3 * 24 * 60 * 60 * 1000;
+  // Auto-fetch more pages until we have all markets
+  useEffect(() => {
+    if (hasNextPage && !isFetchingNextPage && !isLoading) {
+      fetchNextPage();
+    }
+  }, [hasNextPage, isFetchingNextPage, isLoading, fetchNextPage]);
 
-    // New markets: high volume, recently active
-    const newMarkets = markets
+  // Flatten all pages into a single array
+  const allMarkets = useMemo(() => {
+    if (!data?.pages) return [];
+    return data.pages.flatMap(page => page.markets);
+  }, [data]);
+
+  // Filter out closed/resolved markets and sort into columns (no duplicates)
+  // Priority: 1) Closing Soon (<7 days), 2) Trending (>$10M volume), 3) All (rest)
+  const { closingSoonMarkets, trendingMarkets, allOpenMarkets } = useMemo(() => {
+    const now = Date.now();
+    const sevenDaysFromNow = now + 7 * 24 * 60 * 60 * 1000;
+
+    // Filter out resolved/closed markets
+    const openMarkets = allMarkets.filter((m) => {
+      // Skip resolved markets
+      if (m.resolved) return false;
+      // Skip markets that have already ended
+      if (m.end_date) {
+        const endTime = new Date(m.end_date).getTime();
+        if (endTime < now) return false;
+      }
+      return true;
+    });
+
+    // Track which markets are already used
+    const usedIds = new Set<string>();
+
+    // 1. CLOSING SOON (highest priority): markets ending within 7 days
+    const closingSoonMarkets = openMarkets
       .filter((m) => {
+        if (!m.end_date) return false;
+        const endTime = new Date(m.end_date).getTime();
+        return endTime > now && endTime < sevenDaysFromNow;
+      })
+      .sort((a, b) => {
+        const endA = new Date(a.end_date!).getTime();
+        const endB = new Date(b.end_date!).getTime();
+        return endA - endB; // Earliest first
+      });
+
+    // Mark closing soon markets as used
+    closingSoonMarkets.forEach(m => usedIds.add(m.condition_id));
+
+    // 2. TRENDING: markets with >$10M volume (not already in Closing Soon)
+    const trendingMarkets = openMarkets
+      .filter((m) => {
+        if (usedIds.has(m.condition_id)) return false;
         const volume = typeof m.volume === 'string' ? parseFloat(m.volume) : (m.volume || 0);
-        return volume > 10000;
+        return volume >= 10_000_000; // $10M+
       })
       .sort((a, b) => {
         const volA = typeof a.volume === 'string' ? parseFloat(a.volume) : (a.volume || 0);
         const volB = typeof b.volume === 'string' ? parseFloat(b.volume) : (b.volume || 0);
-        return volB - volA;
-      })
-      .slice(0, 15);
+        return volB - volA; // Highest volume first
+      });
 
-    // Trending: high 24h volume
-    const trendingMarkets = markets
-      .filter((m) => {
-        const vol24h = typeof m.volume_24h === 'string' ? parseFloat(m.volume_24h) : (m.volume_24h || 0);
-        return vol24h > 5000;
-      })
-      .sort((a, b) => {
-        const volA = typeof a.volume_24h === 'string' ? parseFloat(a.volume_24h) : (a.volume_24h || 0);
-        const volB = typeof b.volume_24h === 'string' ? parseFloat(b.volume_24h) : (b.volume_24h || 0);
-        return volB - volA;
-      })
-      .slice(0, 15);
+    // Mark trending markets as used
+    trendingMarkets.forEach(m => usedIds.add(m.condition_id));
 
-    // Almost resolved: end_date within 3 days
-    const almostResolvedMarkets = markets
-      .filter((m) => {
-        if (!m.end_date) return false;
-        const endTime = new Date(m.end_date).getTime();
-        return endTime > now && endTime < threeDaysFromNow;
-      })
-      .sort((a, b) => {
-        const endA = new Date(a.end_date || 0).getTime();
-        const endB = new Date(b.end_date || 0).getTime();
-        return endA - endB; // Earliest first
-      })
-      .slice(0, 15);
+    // 3. ALL: everything else, with applied filters
+    let allOpenMarkets = openMarkets.filter((m) => !usedIds.has(m.condition_id));
 
-    return { newMarkets, trendingMarkets, almostResolvedMarkets };
-  }, [markets]);
+    // Apply special category filters for ALL column
+    if (selectedCategory === 'trending') {
+      allOpenMarkets = allOpenMarkets.filter(m => {
+        const vol = typeof m.volume === 'string' ? parseFloat(m.volume) : (m.volume || 0);
+        return vol >= 5_000_000;
+      });
+    } else if (selectedCategory === 'new' || selectedCategory === 'newest') {
+      // Already sorted by newest from API if sortBy is 'newest'
+    }
+
+    // Sort based on current sortBy (already done by API, but ensure client-side consistency)
+    allOpenMarkets.sort((a, b) => {
+      switch (sortBy) {
+        case 'volume_24h': {
+          const vol24A = typeof a.volume_24h === 'string' ? parseFloat(a.volume_24h) : (a.volume_24h || 0);
+          const vol24B = typeof b.volume_24h === 'string' ? parseFloat(b.volume_24h) : (b.volume_24h || 0);
+          return vol24B - vol24A;
+        }
+        case 'ending_soon': {
+          if (!a.end_date && !b.end_date) return 0;
+          if (!a.end_date) return 1;
+          if (!b.end_date) return -1;
+          return new Date(a.end_date).getTime() - new Date(b.end_date).getTime();
+        }
+        case 'liquidity': {
+          const liqA = typeof a.liquidity === 'string' ? parseFloat(a.liquidity) : (a.liquidity || 0);
+          const liqB = typeof b.liquidity === 'string' ? parseFloat(b.liquidity) : (b.liquidity || 0);
+          return liqB - liqA;
+        }
+        default: {
+          const volA = typeof a.volume === 'string' ? parseFloat(a.volume) : (a.volume || 0);
+          const volB = typeof b.volume === 'string' ? parseFloat(b.volume) : (b.volume || 0);
+          return volB - volA;
+        }
+      }
+    });
+
+    return { closingSoonMarkets, trendingMarkets, allOpenMarkets };
+  }, [allMarkets, sortBy, selectedCategory]);
+
+  // Close filter menu when clicking outside
+  useEffect(() => {
+    const handleClickOutside = (e: MouseEvent) => {
+      if (showFilters) {
+        const target = e.target as HTMLElement;
+        if (!target.closest('.filter-dropdown')) {
+          setShowFilters(false);
+          setActiveFilterMenu(null);
+        }
+      }
+    };
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, [showFilters]);
 
   if (isLoading) {
     return (
@@ -94,37 +233,209 @@ export function MarketGrid({ onSelectMarket, selectedMarketId }: MarketGridProps
     );
   }
 
+  const totalMarkets = data?.pages[0]?.pagination.total || allMarkets.length;
+
   return (
     <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 h-full">
-      {/* New Markets Column */}
+      {/* Closing Soon Column (highest priority) */}
       <MarketColumn
-        title="NEW"
-        subtitle="High volume markets"
-        markets={newMarkets}
+        title="CLOSING SOON"
+        subtitle="Resolving within 7 days"
+        markets={closingSoonMarkets}
         onSelectMarket={onSelectMarket}
         selectedMarketId={selectedMarketId}
-        accentColor="cyan"
+        accentColor="magenta"
+        onLoadMore={hasNextPage && !isFetchingNextPage ? fetchNextPage : undefined}
+        isLoadingMore={isFetchingNextPage}
       />
 
       {/* Trending Column */}
       <MarketColumn
         title="TRENDING"
-        subtitle="Hot in last 24h"
+        subtitle="$10M+ volume"
         markets={trendingMarkets}
         onSelectMarket={onSelectMarket}
         selectedMarketId={selectedMarketId}
         accentColor="amber"
+        onLoadMore={hasNextPage && !isFetchingNextPage ? fetchNextPage : undefined}
+        isLoadingMore={isFetchingNextPage}
       />
 
-      {/* Almost Resolved Column */}
-      <MarketColumn
-        title="CLOSING SOON"
-        subtitle="Resolving in < 3 days"
-        markets={almostResolvedMarkets}
-        onSelectMarket={onSelectMarket}
-        selectedMarketId={selectedMarketId}
-        accentColor="magenta"
-      />
+      {/* All Markets Column with Filters */}
+      <div className="bg-terminal-surface/60 border border-terminal-border rounded-lg flex flex-col overflow-hidden">
+        {/* Column Header with Filter Dropdown */}
+        <div className="px-3 py-2 border-b border-neon-cyan/30 bg-terminal-bg/50">
+          <div className="flex items-center justify-between">
+            <h3 className="font-mono text-sm font-bold text-neon-cyan">ALL</h3>
+            <div className="flex items-center gap-2">
+              <span className="text-terminal-muted text-[10px] font-mono">
+                {allOpenMarkets.length} / {totalMarkets}
+              </span>
+              {/* Filter Button */}
+              <div className="relative filter-dropdown">
+                <button
+                  onClick={() => setShowFilters(!showFilters)}
+                  className={`
+                    p-1 rounded transition-colors
+                    ${showFilters ? 'bg-neon-cyan/20 text-neon-cyan' : 'text-terminal-muted hover:text-white hover:bg-terminal-border/30'}
+                  `}
+                >
+                  <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 4a1 1 0 011-1h16a1 1 0 011 1v2.586a1 1 0 01-.293.707l-6.414 6.414a1 1 0 00-.293.707V17l-4 4v-6.586a1 1 0 00-.293-.707L3.293 7.293A1 1 0 013 6.586V4z" />
+                  </svg>
+                </button>
+
+                {/* Filter Dropdown */}
+                {showFilters && (
+                  <div className="absolute right-0 top-full mt-1 z-50 flex">
+                    {/* Main menu */}
+                    <div className="bg-terminal-surface border border-terminal-border rounded-lg shadow-xl min-w-[140px]">
+                      <button
+                        onClick={() => setActiveFilterMenu(activeFilterMenu === 'sort' ? null : 'sort')}
+                        className={`
+                          w-full px-3 py-2 text-left text-xs font-mono flex items-center justify-between
+                          ${activeFilterMenu === 'sort' ? 'bg-neon-cyan/10 text-neon-cyan' : 'text-white hover:bg-terminal-border/30'}
+                        `}
+                      >
+                        <span>Sort By</span>
+                        <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+                        </svg>
+                      </button>
+                      <button
+                        onClick={() => setActiveFilterMenu(activeFilterMenu === 'category' ? null : 'category')}
+                        className={`
+                          w-full px-3 py-2 text-left text-xs font-mono flex items-center justify-between
+                          ${activeFilterMenu === 'category' ? 'bg-neon-cyan/10 text-neon-cyan' : 'text-white hover:bg-terminal-border/30'}
+                        `}
+                      >
+                        <span>Categories</span>
+                        <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+                        </svg>
+                      </button>
+                      {/* Clear filters */}
+                      {(selectedCategory || sortBy !== 'volume') && (
+                        <button
+                          onClick={() => {
+                            setSelectedCategory(null);
+                            setSortBy('volume');
+                            setShowFilters(false);
+                            setActiveFilterMenu(null);
+                          }}
+                          className="w-full px-3 py-2 text-left text-xs font-mono text-neon-red hover:bg-neon-red/10 border-t border-terminal-border"
+                        >
+                          Clear Filters
+                        </button>
+                      )}
+                    </div>
+
+                    {/* Sub-sidebar for Sort */}
+                    {activeFilterMenu === 'sort' && (
+                      <div className="bg-terminal-surface border border-terminal-border rounded-lg shadow-xl ml-1 min-w-[130px]">
+                        {SORT_OPTIONS.map((option) => (
+                          <button
+                            key={option.id}
+                            onClick={() => {
+                              setSortBy(option.id as SortBy);
+                              setShowFilters(false);
+                              setActiveFilterMenu(null);
+                            }}
+                            className={`
+                              w-full px-3 py-2 text-left text-xs font-mono flex items-center gap-2
+                              ${sortBy === option.id ? 'bg-neon-cyan/10 text-neon-cyan' : 'text-white hover:bg-terminal-border/30'}
+                            `}
+                          >
+                            {sortBy === option.id && (
+                              <svg className="w-3 h-3 shrink-0" fill="currentColor" viewBox="0 0 20 20">
+                                <path fillRule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clipRule="evenodd" />
+                              </svg>
+                            )}
+                            <span className={sortBy !== option.id ? 'ml-5' : ''}>{option.label}</span>
+                          </button>
+                        ))}
+                      </div>
+                    )}
+
+                    {/* Sub-sidebar for Categories */}
+                    {activeFilterMenu === 'category' && (
+                      <div className="bg-terminal-surface border border-terminal-border rounded-lg shadow-xl ml-1 min-w-[130px] max-h-[400px] overflow-y-auto">
+                        <button
+                          onClick={() => {
+                            setSelectedCategory(null);
+                            setShowFilters(false);
+                            setActiveFilterMenu(null);
+                          }}
+                          className={`
+                            w-full px-3 py-2 text-left text-xs font-mono flex items-center gap-2
+                            ${selectedCategory === null ? 'bg-neon-cyan/10 text-neon-cyan' : 'text-white hover:bg-terminal-border/30'}
+                          `}
+                        >
+                          {selectedCategory === null && (
+                            <svg className="w-3 h-3 shrink-0" fill="currentColor" viewBox="0 0 20 20">
+                              <path fillRule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clipRule="evenodd" />
+                            </svg>
+                          )}
+                          <span className={selectedCategory !== null ? 'ml-5' : ''}>All Categories</span>
+                        </button>
+                        <div className="border-t border-terminal-border" />
+                        {CATEGORIES.map((cat) => (
+                          <button
+                            key={cat.id}
+                            onClick={() => {
+                              setSelectedCategory(cat.id);
+                              setShowFilters(false);
+                              setActiveFilterMenu(null);
+                            }}
+                            className={`
+                              w-full px-3 py-2 text-left text-xs font-mono flex items-center gap-2
+                              ${selectedCategory === cat.id ? 'bg-neon-cyan/10 text-neon-cyan' : 'text-white hover:bg-terminal-border/30'}
+                            `}
+                          >
+                            {selectedCategory === cat.id && (
+                              <svg className="w-3 h-3 shrink-0" fill="currentColor" viewBox="0 0 20 20">
+                                <path fillRule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clipRule="evenodd" />
+                              </svg>
+                            )}
+                            <span className={selectedCategory !== cat.id ? 'ml-5' : ''}>{cat.label}</span>
+                          </button>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                )}
+              </div>
+            </div>
+          </div>
+          <div className="flex items-center gap-2">
+            <p className="text-terminal-muted text-[10px]">All open markets</p>
+            {/* Active filter badges */}
+            {(sortBy !== 'volume' || selectedCategory) && (
+              <div className="flex items-center gap-1">
+                {sortBy !== 'volume' && (
+                  <span className="px-1.5 py-0.5 bg-neon-cyan/10 text-neon-cyan text-[9px] font-mono rounded">
+                    {SORT_OPTIONS.find(s => s.id === sortBy)?.label}
+                  </span>
+                )}
+                {selectedCategory && (
+                  <span className="px-1.5 py-0.5 bg-neon-amber/10 text-neon-amber text-[9px] font-mono rounded">
+                    {CATEGORIES.find(c => c.id === selectedCategory)?.label}
+                  </span>
+                )}
+              </div>
+            )}
+          </div>
+        </div>
+
+        {/* Market List */}
+        <MarketList
+          markets={allOpenMarkets}
+          onSelectMarket={onSelectMarket}
+          selectedMarketId={selectedMarketId}
+          onLoadMore={hasNextPage && !isFetchingNextPage ? fetchNextPage : undefined}
+          isLoadingMore={isFetchingNextPage}
+        />
+      </div>
     </div>
   );
 }
@@ -136,6 +447,8 @@ interface MarketColumnProps {
   onSelectMarket: (market: Market) => void;
   selectedMarketId: string | null;
   accentColor: 'cyan' | 'amber' | 'magenta';
+  onLoadMore?: () => void;
+  isLoadingMore?: boolean;
 }
 
 function MarketColumn({
@@ -145,6 +458,8 @@ function MarketColumn({
   onSelectMarket,
   selectedMarketId,
   accentColor,
+  onLoadMore,
+  isLoadingMore,
 }: MarketColumnProps) {
   const colorClasses = {
     cyan: 'text-neon-cyan border-neon-cyan/30',
@@ -156,31 +471,89 @@ function MarketColumn({
     <div className="bg-terminal-surface/60 border border-terminal-border rounded-lg flex flex-col overflow-hidden">
       {/* Column Header */}
       <div className={`px-3 py-2 border-b ${colorClasses[accentColor].split(' ')[1]} bg-terminal-bg/50`}>
-        <h3 className={`font-mono text-sm font-bold ${colorClasses[accentColor].split(' ')[0]}`}>
-          {title}
-        </h3>
+        <div className="flex items-center justify-between">
+          <h3 className={`font-mono text-sm font-bold ${colorClasses[accentColor].split(' ')[0]}`}>
+            {title}
+          </h3>
+          <span className="text-terminal-muted text-[10px] font-mono">
+            {markets.length} markets
+          </span>
+        </div>
         <p className="text-terminal-muted text-[10px]">{subtitle}</p>
       </div>
 
       {/* Market List */}
-      <div className="flex-1 overflow-y-auto">
-        {markets.length === 0 ? (
-          <div className="p-4 text-center text-terminal-muted text-xs">
-            No markets found
-          </div>
-        ) : (
-          <div className="divide-y divide-terminal-border/30">
-            {markets.map((market) => (
-              <CompactMarketCard
-                key={market.condition_id}
-                market={market}
-                isSelected={selectedMarketId === market.condition_id}
-                onSelect={() => onSelectMarket(market)}
-              />
-            ))}
-          </div>
-        )}
-      </div>
+      <MarketList
+        markets={markets}
+        onSelectMarket={onSelectMarket}
+        selectedMarketId={selectedMarketId}
+        onLoadMore={onLoadMore}
+        isLoadingMore={isLoadingMore}
+      />
+    </div>
+  );
+}
+
+interface MarketListProps {
+  markets: Market[];
+  onSelectMarket: (market: Market) => void;
+  selectedMarketId: string | null;
+  onLoadMore?: () => void;
+  isLoadingMore?: boolean;
+}
+
+function MarketList({
+  markets,
+  onSelectMarket,
+  selectedMarketId,
+  onLoadMore,
+  isLoadingMore,
+}: MarketListProps) {
+  const scrollRef = useRef<HTMLDivElement>(null);
+
+  // Infinite scroll handler
+  const handleScroll = useCallback(() => {
+    if (!scrollRef.current || !onLoadMore || isLoadingMore) return;
+
+    const { scrollTop, scrollHeight, clientHeight } = scrollRef.current;
+    // Load more when scrolled to 80% of the list
+    if (scrollTop + clientHeight >= scrollHeight * 0.8) {
+      onLoadMore();
+    }
+  }, [onLoadMore, isLoadingMore]);
+
+  // Attach scroll listener
+  useEffect(() => {
+    const el = scrollRef.current;
+    if (!el) return;
+
+    el.addEventListener('scroll', handleScroll);
+    return () => el.removeEventListener('scroll', handleScroll);
+  }, [handleScroll]);
+
+  return (
+    <div ref={scrollRef} className="flex-1 overflow-y-auto">
+      {markets.length === 0 ? (
+        <div className="p-4 text-center text-terminal-muted text-xs">
+          No markets found
+        </div>
+      ) : (
+        <div className="divide-y divide-terminal-border/30">
+          {markets.map((market) => (
+            <CompactMarketCard
+              key={market.condition_id}
+              market={market}
+              isSelected={selectedMarketId === market.condition_id}
+              onSelect={() => onSelectMarket(market)}
+            />
+          ))}
+          {isLoadingMore && (
+            <div className="p-3 text-center">
+              <div className="inline-block w-4 h-4 border-2 border-terminal-muted border-t-neon-cyan rounded-full animate-spin" />
+            </div>
+          )}
+        </div>
+      )}
     </div>
   );
 }
@@ -249,6 +622,11 @@ function CompactMarketCard({ market, isSelected, onSelect }: CompactMarketCardPr
             {timeUntil && (
               <span className="text-neon-magenta font-mono">
                 {timeUntil}
+              </span>
+            )}
+            {market.category && (
+              <span className="text-terminal-muted/60 font-mono truncate">
+                {market.category}
               </span>
             )}
           </div>

@@ -154,11 +154,61 @@ export interface MarketCategory {
   count: number;
 }
 
-export async function getMarkets(limit = 50, category?: string): Promise<Market[]> {
-  const params = new URLSearchParams({ limit: String(limit) });
-  if (category) params.append('category', category);
+export interface MarketsResponse {
+  markets: Market[];
+  pagination: {
+    offset: number;
+    limit: number;
+    count: number;
+    total: number;
+    hasMore: boolean;
+  };
+}
+
+export type SortBy = 'volume' | 'volume_24h' | 'ending_soon' | 'liquidity' | 'newest';
+
+export interface GetMarketsOptions {
+  limit?: number;
+  offset?: number;
+  category?: string;
+  sortBy?: SortBy;
+}
+
+export async function getMarkets(
+  limitOrOptions: number | GetMarketsOptions = 50,
+  category?: string,
+  offset = 0
+): Promise<MarketsResponse> {
+  // Handle both old signature (limit, category, offset) and new options object
+  let options: GetMarketsOptions;
+  if (typeof limitOrOptions === 'number') {
+    options = { limit: limitOrOptions, category, offset };
+  } else {
+    options = limitOrOptions;
+  }
+
+  const params = new URLSearchParams({
+    limit: String(options.limit ?? 50),
+    offset: String(options.offset ?? 0),
+  });
+  if (options.category) params.append('category', options.category);
+  if (options.sortBy) params.append('sortBy', options.sortBy);
+
   const { data } = await api.get(`/api/markets?${params}`);
+  // Handle legacy response format (array) for backwards compatibility
+  if (Array.isArray(data)) {
+    return {
+      markets: data,
+      pagination: { offset: 0, limit: options.limit ?? 50, count: data.length, total: data.length, hasMore: false }
+    };
+  }
   return data;
+}
+
+// Simple fetch for backwards compatibility (returns flat array)
+export async function getMarketsSimple(limit = 50, category?: string): Promise<Market[]> {
+  const response = await getMarkets(limit, category, 0);
+  return response.markets;
 }
 
 export async function getCategories(): Promise<MarketCategory[]> {
@@ -175,5 +225,31 @@ export async function getMarketHolders(conditionId: string, limit = 50) {
     avgPrice: number;
     value: number;
   }[];
+}
+
+// Polymarket CLOB price history endpoint
+export interface PriceHistoryPoint {
+  t: number; // Unix timestamp
+  p: number; // Price
+}
+
+export async function getPriceHistory(
+  tokenId: string,
+  interval: '1h' | '6h' | '1d' | '1w' | 'max' = '1d'
+): Promise<PriceHistoryPoint[]> {
+  try {
+    const response = await fetch(
+      `https://clob.polymarket.com/prices-history?market=${tokenId}&interval=${interval}`
+    );
+    if (!response.ok) {
+      console.warn(`Price history fetch failed: ${response.status}`);
+      return [];
+    }
+    const data = await response.json();
+    return data.history || [];
+  } catch (err) {
+    console.error('Error fetching price history:', err);
+    return [];
+  }
 }
 

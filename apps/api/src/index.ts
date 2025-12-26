@@ -291,13 +291,17 @@ app.get('/api/markets/stats', async (_req, res) => {
 // By default shows only open (unresolved) markets
 // Use ?resolved=true to see resolved markets, ?all=true to see everything
 // Use ?category=Crypto to filter by category
+// Use ?sortBy=volume_24h|ending_soon|liquidity|newest to change sorting
 app.get('/api/markets', async (req, res) => {
   try {
-    const limit = Math.min(parseInt(req.query.limit as string) || 100, 500);
+    const limit = Math.min(parseInt(req.query.limit as string) || 100, 2000); // Allow up to 2000 markets
+    const offset = Math.max(parseInt(req.query.offset as string) || 0, 0);
     const showAll = req.query.all === 'true';
     const showResolved = req.query.resolved === 'true';
     const tradeableOnly = req.query.tradeable !== 'false'; // Default: only tradeable
     const category = req.query.category as string | undefined;
+    const minVolume = parseInt(req.query.minVolume as string) || (tradeableOnly ? 1000 : 0);
+    const sortBy = req.query.sortBy as string | undefined;
 
     // Default: show only open (unresolved) markets
     // ?resolved=true: show only resolved markets
@@ -305,6 +309,26 @@ app.get('/api/markets', async (req, res) => {
     let resolvedFilter: boolean | null = null;
     if (!showAll) {
       resolvedFilter = showResolved ? true : false;
+    }
+
+    // Build ORDER BY clause based on sortBy parameter
+    let orderBy = 'volume DESC NULLS LAST, question ASC';
+    switch (sortBy) {
+      case 'volume_24h':
+        orderBy = 'volume_24h DESC NULLS LAST, volume DESC NULLS LAST';
+        break;
+      case 'ending_soon':
+        orderBy = 'end_date ASC NULLS LAST, volume DESC NULLS LAST';
+        break;
+      case 'liquidity':
+        orderBy = 'liquidity DESC NULLS LAST, volume DESC NULLS LAST';
+        break;
+      case 'newest':
+        // Use end_date DESC as proxy for "newest" (markets ending furthest in future are likely newer)
+        orderBy = 'end_date DESC NULLS LAST, volume DESC NULLS LAST';
+        break;
+      default:
+        orderBy = 'volume DESC NULLS LAST, question ASC';
     }
 
     const { rows } = await db.query(`
@@ -332,18 +356,44 @@ app.get('/api/markets', async (req, res) => {
       WHERE ($1::boolean IS NULL OR COALESCE(resolved, false) = $1)
         AND question IS NOT NULL
         AND ($3::boolean = false OR (
-          COALESCE(last_price_yes, 0.5) >= 0.05
-          AND COALESCE(last_price_yes, 0.5) <= 0.95
-          AND COALESCE(volume, 0) > 10000
+          COALESCE(last_price_yes, 0.5) >= 0.01
+          AND COALESCE(last_price_yes, 0.5) <= 0.99
+          AND COALESCE(volume, 0) >= $5
         ))
         AND ($4::text IS NULL OR category = $4)
-      ORDER BY
-        volume DESC NULLS LAST,
-        question ASC
-      LIMIT $2
-    `, [resolvedFilter, limit, tradeableOnly, category || null]);
+        AND (end_date IS NULL OR end_date > NOW()) -- Exclude markets that have already ended
+      ORDER BY ${orderBy}
+      LIMIT $2 OFFSET $6
+    `, [resolvedFilter, limit, tradeableOnly, category || null, minVolume, offset]);
 
-    res.json(rows);
+    // Get total count for proper pagination
+    const { rows: countRows } = await db.query(`
+      SELECT COUNT(*) as total
+      FROM markets
+      WHERE ($1::boolean IS NULL OR COALESCE(resolved, false) = $1)
+        AND question IS NOT NULL
+        AND ($2::boolean = false OR (
+          COALESCE(last_price_yes, 0.5) >= 0.01
+          AND COALESCE(last_price_yes, 0.5) <= 0.99
+          AND COALESCE(volume, 0) >= $4
+        ))
+        AND ($3::text IS NULL OR category = $3)
+        AND (end_date IS NULL OR end_date > NOW())
+    `, [resolvedFilter, tradeableOnly, category || null, minVolume]);
+
+    const total = parseInt(countRows[0]?.total || '0');
+
+    // Return with pagination metadata
+    res.json({
+      markets: rows,
+      pagination: {
+        offset,
+        limit,
+        count: rows.length,
+        total,
+        hasMore: offset + rows.length < total,
+      }
+    });
   } catch (err) {
     console.error('Error fetching markets:', err);
     res.status(500).json({ error: 'Failed to fetch markets' });

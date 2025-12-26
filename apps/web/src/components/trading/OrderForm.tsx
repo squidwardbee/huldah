@@ -1,4 +1,5 @@
 import { useState, useEffect } from 'react';
+import { createPortal } from 'react-dom';
 import { useAccount } from 'wagmi';
 import { useWalletTrading } from '../../hooks/useWalletTrading';
 import { useDirectTrading } from '../../hooks/useDirectTrading';
@@ -180,10 +181,103 @@ export function OrderForm({
 
   const isProcessing = isSubmitting || isTradeLoading;
 
+  // Format balance for compact display
+  const formattedBalance = walletTrading.balance
+    ? `$${(parseFloat(walletTrading.balance) / 1e6).toFixed(2)}`
+    : '-';
+
+  // Compact mode: minimal UI that fits in constrained space
+  if (compact) {
+    return (
+      <div className="bg-terminal-surface/80 border-terminal-border overflow-hidden h-full flex flex-col text-xs">
+        {/* Header with balance */}
+        <div className="px-2 py-1 border-b border-terminal-border shrink-0 flex items-center justify-between">
+          <div className="flex items-center gap-2">
+            <span className="text-white font-mono font-semibold text-[10px]">ORDER</span>
+            <span className={`text-[10px] font-mono ${walletTrading.isReady ? 'text-neon-green' : 'text-terminal-muted'}`}>
+              {walletTrading.isReady ? '●' : '○'}
+            </span>
+          </div>
+          <span className="text-neon-cyan font-mono text-[10px]">{formattedBalance}</span>
+        </div>
+
+        {/* Buy/Sell Toggle */}
+        <div className="flex shrink-0">
+          <button
+            onClick={() => setSide('BUY')}
+            className={`flex-1 py-1.5 font-mono font-bold text-[10px] ${side === 'BUY' ? 'bg-neon-green/20 text-neon-green' : 'text-terminal-muted'}`}
+          >
+            BUY
+          </button>
+          <button
+            onClick={() => setSide('SELL')}
+            className={`flex-1 py-1.5 font-mono font-bold text-[10px] ${side === 'SELL' ? 'bg-neon-red/20 text-neon-red' : 'text-terminal-muted'}`}
+          >
+            SELL
+          </button>
+        </div>
+
+        {/* Form */}
+        <form onSubmit={handleSubmit} className="flex-1 flex flex-col p-2 gap-2 overflow-auto">
+          {/* Limit/Market */}
+          <div className="flex gap-1">
+            <button type="button" onClick={() => setOrderMode('LIMIT')}
+              className={`flex-1 py-1 text-[10px] font-mono rounded border ${orderMode === 'LIMIT' ? 'border-neon-cyan text-neon-cyan' : 'border-terminal-border text-terminal-muted'}`}>
+              LIMIT
+            </button>
+            <button type="button" onClick={() => setOrderMode('MARKET')}
+              className={`flex-1 py-1 text-[10px] font-mono rounded border ${orderMode === 'MARKET' ? 'border-neon-amber text-neon-amber' : 'border-terminal-border text-terminal-muted'}`}>
+              MARKET
+            </button>
+          </div>
+
+          {/* Price */}
+          {orderMode === 'LIMIT' && (
+            <div>
+              <label className="text-terminal-muted text-[10px] uppercase">Price</label>
+              <input type="number" value={price} onChange={(e) => setPrice(e.target.value)} step="0.01" min="0.01" max="0.99"
+                className="w-full bg-terminal-bg border border-terminal-border rounded px-2 py-1 font-mono text-white text-sm" />
+            </div>
+          )}
+
+          {/* Size */}
+          <div>
+            <label className="text-terminal-muted text-[10px] uppercase">Shares</label>
+            <input type="number" value={size} onChange={(e) => setSize(e.target.value)} step="1" min="1"
+              className="w-full bg-terminal-bg border border-terminal-border rounded px-2 py-1 font-mono text-white text-sm" />
+          </div>
+
+          {/* Summary */}
+          <div className="bg-terminal-bg rounded p-1.5 space-y-0.5 text-[10px]">
+            <div className="flex justify-between">
+              <span className="text-terminal-muted">Cost</span>
+              <span className="text-white font-mono">${cost.toFixed(2)}</span>
+            </div>
+            <div className="flex justify-between">
+              <span className="text-terminal-muted">Return</span>
+              <span className="text-neon-green font-mono">{cost > 0 ? ((potentialProfit / cost) * 100).toFixed(0) : 0}%</span>
+            </div>
+          </div>
+
+          {/* Error */}
+          {(error || tradeError) && (
+            <div className="text-neon-red text-[10px] truncate">{error || tradeError}</div>
+          )}
+
+          {/* Submit */}
+          <button type="submit" disabled={isProcessing || !isPriceValid || !canPlaceMarketOrder || sizeNum <= 0}
+            className={`w-full py-2 rounded font-mono font-bold text-xs disabled:opacity-50 ${side === 'BUY' ? 'bg-neon-green text-black' : 'bg-neon-red text-white'}`}>
+            {isProcessing ? 'PLACING...' : `${side} ${sizeNum} @ ${(effectivePrice * 100).toFixed(0)}¢`}
+          </button>
+        </form>
+      </div>
+    );
+  }
+
   return (
-    <div className={`bg-terminal-surface/80 border border-terminal-border overflow-hidden h-full flex flex-col ${compact ? 'rounded-none border-x-0 border-b-0' : 'rounded-lg'}`}>
+    <div className="bg-terminal-surface/80 border border-terminal-border overflow-hidden h-full flex flex-col rounded-lg">
       {/* Header */}
-      <div className={`border-b border-terminal-border shrink-0 ${compact ? 'px-3 py-2' : 'px-4 py-3'}`}>
+      <div className="border-b border-terminal-border shrink-0 px-4 py-3">
         <div className="flex items-center justify-between">
           <h3 className="text-white font-mono text-xs font-semibold">ORDER</h3>
           {/* Trading Method Selector */}
@@ -602,16 +696,21 @@ export function OrderForm({
         )}
       </form>
 
-      {/* API Credentials Setup Modal */}
-      {showCredentialsForm && (
-        <div className="fixed inset-0 bg-black/80 flex items-center justify-center z-50 p-4">
-          <div className="max-w-md w-full">
+      {/* API Credentials Setup Modal - rendered via Portal */}
+      {showCredentialsForm && createPortal(
+        <div
+          className="fixed inset-0 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4"
+          style={{ zIndex: 9999 }}
+          onClick={() => setShowCredentialsForm(false)}
+        >
+          <div className="max-w-md w-full shadow-2xl shadow-black/50" onClick={(e) => e.stopPropagation()}>
             <DirectCredentialsForm
               onSuccess={() => setShowCredentialsForm(false)}
               onCancel={() => setShowCredentialsForm(false)}
             />
           </div>
-        </div>
+        </div>,
+        document.body
       )}
     </div>
   );

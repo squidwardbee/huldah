@@ -1,6 +1,7 @@
 import { useAccount, useConnect, useDisconnect, useSignMessage, useSwitchChain, useChainId } from 'wagmi';
 import { polygon } from 'wagmi/chains';
 import { useState, useEffect, useRef, useCallback } from 'react';
+import { createPortal } from 'react-dom';
 import { useAuthStore } from '../stores/authStore';
 import { getAuthChallenge, login, logout } from '../lib/tradingApi';
 
@@ -152,10 +153,11 @@ export function ConnectWallet() {
           )}
         </div>
 
-        {/* Wallet Selection Modal */}
-        {showModal && (
+        {/* Wallet Selection Modal - rendered via Portal to document.body */}
+        {showModal && createPortal(
           <div
-            className="fixed inset-0 bg-black/80 flex items-center justify-center z-50 p-4"
+            className="fixed inset-0 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4"
+            style={{ zIndex: 9999 }}
             onClick={() => {
               if (!isConnecting && !isAuthenticating && !isSwitching) {
                 pendingAuthRef.current = false;
@@ -164,7 +166,7 @@ export function ConnectWallet() {
             }}
           >
             <div
-              className="bg-terminal-surface border border-terminal-border rounded-lg p-6 max-w-sm w-full"
+              className="bg-terminal-surface border border-neon-cyan/30 rounded-lg p-6 max-w-sm w-full shadow-2xl shadow-black/50 animate-fade-in"
               onClick={(e) => e.stopPropagation()}
             >
               <div className="flex items-center justify-between mb-6">
@@ -243,7 +245,8 @@ export function ConnectWallet() {
                 </div>
               )}
             </div>
-          </div>
+          </div>,
+          document.body
         )}
       </>
     );

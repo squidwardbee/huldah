@@ -1,5 +1,5 @@
-import { useQuery } from '@tanstack/react-query';
-import { useState } from 'react';
+import { useInfiniteQuery } from '@tanstack/react-query';
+import { useState, useMemo, useRef, useCallback, useEffect } from 'react';
 import { getMarkets, type Market } from '../../lib/tradingApi';
 
 interface MarketSelectorProps {
@@ -7,30 +7,88 @@ interface MarketSelectorProps {
   onSelectToken: (tokenId: string, market: Market) => void;
 }
 
+const PAGE_SIZE = 100;
+
 export function MarketSelector({ selectedTokenId, onSelectToken }: MarketSelectorProps) {
   const [search, setSearch] = useState('');
-  
-  const { data: markets = [], isLoading } = useQuery({
-    queryKey: ['markets'],
-    queryFn: () => getMarkets(200), // Fetch more markets (all open by default)
+  const scrollRef = useRef<HTMLDivElement>(null);
+
+  const {
+    data,
+    isLoading,
+    fetchNextPage,
+    hasNextPage,
+    isFetchingNextPage,
+  } = useInfiniteQuery({
+    queryKey: ['markets-selector'],
+    queryFn: async ({ pageParam = 0 }) => {
+      const response = await getMarkets(PAGE_SIZE, undefined, pageParam);
+      return response;
+    },
+    getNextPageParam: (lastPage) => {
+      if (lastPage.pagination.hasMore) {
+        return lastPage.pagination.offset + lastPage.pagination.limit;
+      }
+      return undefined;
+    },
+    initialPageParam: 0,
     staleTime: 60000,
   });
 
+  // Auto-fetch more pages until we hit max
+  useEffect(() => {
+    if (hasNextPage && !isFetchingNextPage && !isLoading) {
+      fetchNextPage();
+    }
+  }, [hasNextPage, isFetchingNextPage, isLoading, fetchNextPage]);
+
+  // Flatten all pages into a single array
+  const allMarkets = useMemo(() => {
+    if (!data?.pages) return [];
+    return data.pages.flatMap(page => page.markets);
+  }, [data]);
+
   // Filter by search, only show open markets with tradeable prices
-  const filteredMarkets = markets
-    .filter((m: Market) => {
-      if (!m.question) return false;
-      if (m.resolved) return false; // Only open markets
-      if (!m.question.toLowerCase().includes(search.toLowerCase())) return false;
+  const filteredMarkets = useMemo(() => {
+    const now = Date.now();
+    return allMarkets
+      .filter((m: Market) => {
+        if (!m.question) return false;
+        if (m.resolved) return false; // Only open markets
+        // Skip markets that have already ended
+        if (m.end_date) {
+          const endTime = new Date(m.end_date).getTime();
+          if (endTime < now) return false;
+        }
+        if (search && !m.question.toLowerCase().includes(search.toLowerCase())) return false;
 
-      // Filter for tradeable prices (0.05 to 0.95 = 5¢ to 95¢)
-      const price = m.outcome_yes_price || 0.5;
-      const isTradeable = price >= 0.05 && price <= 0.95;
+        // Filter for tradeable prices (0.01 to 0.99 = 1¢ to 99¢)
+        const price = m.outcome_yes_price || 0.5;
+        const isTradeable = price >= 0.01 && price <= 0.99;
 
-      return isTradeable;
-    })
-    // Sort by volume (most liquid first)
-    .sort((a: Market, b: Market) => (b.volume || 0) - (a.volume || 0));
+        return isTradeable;
+      })
+      // Sort by volume (most liquid first)
+      .sort((a: Market, b: Market) => (b.volume || 0) - (a.volume || 0));
+  }, [allMarkets, search]);
+
+  // Infinite scroll handler
+  const handleScroll = useCallback(() => {
+    if (!scrollRef.current || !hasNextPage || isFetchingNextPage) return;
+
+    const { scrollTop, scrollHeight, clientHeight } = scrollRef.current;
+    if (scrollTop + clientHeight >= scrollHeight * 0.8) {
+      fetchNextPage();
+    }
+  }, [hasNextPage, isFetchingNextPage, fetchNextPage]);
+
+  useEffect(() => {
+    const el = scrollRef.current;
+    if (!el) return;
+
+    el.addEventListener('scroll', handleScroll);
+    return () => el.removeEventListener('scroll', handleScroll);
+  }, [handleScroll]);
 
   return (
     <div className="bg-terminal-surface/80 border border-terminal-border rounded-lg overflow-hidden">
@@ -55,7 +113,7 @@ export function MarketSelector({ selectedTokenId, onSelectToken }: MarketSelecto
       </div>
 
       {/* Markets List */}
-      <div className="max-h-[400px] overflow-y-auto">
+      <div ref={scrollRef} className="max-h-[400px] overflow-y-auto">
         {isLoading ? (
           <div className="p-4 space-y-3">
             {[...Array(5)].map((_, i) => (
@@ -71,7 +129,7 @@ export function MarketSelector({ selectedTokenId, onSelectToken }: MarketSelecto
           </div>
         ) : (
           <div className="divide-y divide-terminal-border/30">
-            {filteredMarkets.slice(0, 100).map((market: Market) => {
+            {filteredMarkets.map((market: Market) => {
               // Use condition_id as identifier for now - actual token_id fetched on demand
               const tokenId = market.condition_id;
               const isSelected = selectedTokenId === tokenId;
@@ -117,6 +175,11 @@ export function MarketSelector({ selectedTokenId, onSelectToken }: MarketSelecto
                 </button>
               );
             })}
+            {isFetchingNextPage && (
+              <div className="p-3 text-center">
+                <div className="inline-block w-4 h-4 border-2 border-terminal-muted border-t-neon-cyan rounded-full animate-spin" />
+              </div>
+            )}
           </div>
         )}
       </div>
