@@ -66,22 +66,24 @@ export function PriceChart({ tokenId, outcome = 'YES' }: PriceChartProps) {
   const [interval, setInterval] = useState<TimeInterval>('1d');
   const [showDTW, setShowDTW] = useState(false);
   const [selectedMatchIndex, setSelectedMatchIndex] = useState(0);
-  const [lockedPrediction, setLockedPrediction] = useState<{
+
+  // Store the active prediction - once set, it stays fixed until 4h expires or user changes match
+  const [activePrediction, setActivePrediction] = useState<{
     queryEndTime: number;
     currentPrice: number;
     predictedPrice: number;
     direction: 'UP' | 'DOWN' | 'FLAT';
     similarity: number;
+    matchIndex: number;
     queryData: { time: Time; value: number }[];
+    expiresAt: number; // Unix timestamp when prediction expires (queryEndTime + 4h)
   } | null>(null);
 
   const chartContainerRef = useRef<HTMLDivElement>(null);
   const chartRef = useRef<IChartApi | null>(null);
   const seriesRef = useRef<ISeriesApi<'Line'> | ISeriesApi<'Candlestick'> | null>(null);
-  const patternSeriesRef = useRef<ISeriesApi<'Line'> | null>(null);
+  const predictionSeriesRef = useRef<ISeriesApi<'Line'> | null>(null);
   const queryHighlightRef = useRef<ISeriesApi<'Line'> | null>(null);
-  const lockedPredictionSeriesRef = useRef<ISeriesApi<'Line'> | null>(null);
-  const lockedQuerySeriesRef = useRef<ISeriesApi<'Line'> | null>(null);
 
   // Fetch historical price data
   const { data: priceHistory = [], isLoading } = useQuery({
@@ -100,6 +102,66 @@ export function PriceChart({ tokenId, outcome = 'YES' }: PriceChartProps) {
     staleTime: 60000,
     refetchInterval: 300000,
   });
+
+  // Auto-set prediction when pattern data arrives or match index changes
+  useEffect(() => {
+    if (!showDTW || !patternData || patternData.matches.length === 0) {
+      return;
+    }
+
+    const match = patternData.matches[selectedMatchIndex];
+    if (!match?.patternData || !patternData.query?.data) return;
+
+    const now = Date.now() / 1000;
+
+    // Check if we already have an active prediction for this match that hasn't expired
+    if (activePrediction &&
+        activePrediction.matchIndex === selectedMatchIndex &&
+        activePrediction.expiresAt > now) {
+      // Keep existing prediction
+      return;
+    }
+
+    // Create new prediction
+    const queryStartTime = new Date(patternData.query.startTime).getTime() / 1000;
+    const queryEndTime = new Date(patternData.query.endTime).getTime() / 1000;
+    const queryDuration = queryEndTime - queryStartTime;
+    const timeStep = queryDuration / (patternData.query.data.length - 1);
+    const currentPrice = patternData.query.data[patternData.query.data.length - 1];
+    const outcomeValue = match.outcome4h ?? 0;
+
+    setActivePrediction({
+      queryEndTime,
+      currentPrice,
+      predictedPrice: currentPrice + outcomeValue,
+      direction: match.direction ?? 'FLAT',
+      similarity: match.similarity,
+      matchIndex: selectedMatchIndex,
+      queryData: patternData.query.data.map((value, i) => ({
+        time: (queryStartTime + i * timeStep) as Time,
+        value,
+      })),
+      expiresAt: queryEndTime + 4 * 60 * 60, // 4 hours from query end
+    });
+  }, [showDTW, patternData, selectedMatchIndex, activePrediction]);
+
+  // Clear prediction when DTW is turned off
+  useEffect(() => {
+    if (!showDTW) {
+      setActivePrediction(null);
+    }
+  }, [showDTW]);
+
+  // Check for expired predictions
+  useEffect(() => {
+    if (!activePrediction) return;
+
+    const now = Date.now() / 1000;
+    if (activePrediction.expiresAt <= now) {
+      // Prediction expired - clear it so a new one can be generated
+      setActivePrediction(null);
+    }
+  }, [activePrediction, priceHistory]); // Re-check when price data updates
 
   // Convert price history to chart data
   const chartData = useMemo(() => {
@@ -185,10 +247,8 @@ export function PriceChart({ tokenId, outcome = 'YES' }: PriceChartProps) {
       chart.remove();
       chartRef.current = null;
       seriesRef.current = null;
-      patternSeriesRef.current = null;
+      predictionSeriesRef.current = null;
       queryHighlightRef.current = null;
-      lockedPredictionSeriesRef.current = null;
-      lockedQuerySeriesRef.current = null;
     };
   }, [tokenId]);
 
@@ -244,72 +304,55 @@ export function PriceChart({ tokenId, outcome = 'YES' }: PriceChartProps) {
     chartRef.current.timeScale().fitContent();
   }, [chartType, chartData, lineColor, upColor, downColor]);
 
-  // Add DTW pattern overlay when enabled and data available
+  // Render the active prediction on the chart
   useEffect(() => {
     if (!chartRef.current) return;
 
-    // Remove existing pattern series
-    if (patternSeriesRef.current) {
-      chartRef.current.removeSeries(patternSeriesRef.current);
-      patternSeriesRef.current = null;
+    // Remove existing prediction series
+    if (predictionSeriesRef.current) {
+      chartRef.current.removeSeries(predictionSeriesRef.current);
+      predictionSeriesRef.current = null;
     }
     if (queryHighlightRef.current) {
       chartRef.current.removeSeries(queryHighlightRef.current);
       queryHighlightRef.current = null;
     }
 
-    if (!showDTW || !patternData || patternData.matches.length === 0) return;
+    if (!showDTW || !activePrediction) return;
 
-    const match = patternData.matches[selectedMatchIndex];
-    if (!match?.patternData || !patternData.query?.data) return;
+    const predictionColor = activePrediction.direction === 'UP' ? '#00ff88' :
+                            activePrediction.direction === 'DOWN' ? '#ff3366' : '#ffaa00';
 
-    // Get the time range of the query (last 20 candles)
-    const queryStartTime = new Date(patternData.query.startTime).getTime() / 1000;
-    const queryEndTime = new Date(patternData.query.endTime).getTime() / 1000;
-    const queryDuration = queryEndTime - queryStartTime;
-    const timeStep = queryDuration / (patternData.query.data.length - 1);
-
-    // Get the current price (end of query) to project from
-    const currentPrice = patternData.query.data[patternData.query.data.length - 1];
-
-    // Get the outcome value (price change after 4h)
-    const outcomeValue = match.outcome4h ?? 0;
-    const predictedPrice = currentPrice + outcomeValue;
-    const predictionColor = match.direction === 'UP' ? '#00ff88' : match.direction === 'DOWN' ? '#ff3366' : '#ffaa00';
-
-    // Create a SINGLE continuous line that goes from analyzed portion into prediction
-    // The analyzed portion is solid magenta, the prediction portion is dashed colored
-
-    // First, create the query highlight series (solid magenta for analyzed portion)
+    // Create the query highlight series (solid magenta for analyzed portion)
     const queryHighlight = chartRef.current.addSeries(LineSeries, {
       color: '#ff00ff', // Magenta for query pattern
       lineWidth: 3,
       priceFormat: { type: 'price', precision: 2, minMove: 0.01 },
     });
-
-    const queryHighlightData = patternData.query.data.map((value, i) => ({
-      time: (queryStartTime + i * timeStep) as Time,
-      value,
-    }));
-    queryHighlight.setData(queryHighlightData);
+    queryHighlight.setData(activePrediction.queryData);
     queryHighlightRef.current = queryHighlight;
 
     // Create prediction line - starts from the LAST point of the query (to connect them)
-    const patternSeries = chartRef.current.addSeries(LineSeries, {
+    const predictionSeries = chartRef.current.addSeries(LineSeries, {
       color: predictionColor,
       lineWidth: 3,
       lineStyle: LineStyle.Dashed,
       priceFormat: { type: 'price', precision: 2, minMove: 0.01 },
     });
 
+    // Calculate time step from query data
+    const queryData = activePrediction.queryData;
+    const timeStep = queryData.length > 1
+      ? ((queryData[queryData.length - 1].time as number) - (queryData[0].time as number)) / (queryData.length - 1)
+      : 300; // Default 5 min
+
     // Prediction trajectory starts at current price (end of query) and extends 4h into future
-    const futureTimeStep = timeStep;
     const predictionHorizon = 48; // 4 hours of 5-min candles
 
     // Start prediction from the end of the query line to visually connect them
     const predictionData: { time: Time; value: number }[] = [
       // First point overlaps with last point of query to create visual connection
-      { time: queryEndTime as Time, value: currentPrice },
+      { time: activePrediction.queryEndTime as Time, value: activePrediction.currentPrice },
     ];
 
     // Add curved prediction path (ease-out curve for more natural look)
@@ -317,78 +360,32 @@ export function PriceChart({ tokenId, outcome = 'YES' }: PriceChartProps) {
       const progress = i / predictionHorizon;
       // Ease-out curve: starts fast, slows down
       const easedProgress = 1 - Math.pow(1 - progress, 2);
-      const interpolatedPrice = currentPrice + (predictedPrice - currentPrice) * easedProgress;
+      const interpolatedPrice = activePrediction.currentPrice + (activePrediction.predictedPrice - activePrediction.currentPrice) * easedProgress;
       predictionData.push({
-        time: (queryEndTime + i * futureTimeStep) as Time,
+        time: (activePrediction.queryEndTime + i * timeStep) as Time,
         value: interpolatedPrice,
       });
     }
 
-    patternSeries.setData(predictionData);
-    patternSeriesRef.current = patternSeries;
+    predictionSeries.setData(predictionData);
+    predictionSeriesRef.current = predictionSeries;
 
     // Fit content to show the prediction
     chartRef.current.timeScale().fitContent();
 
-  }, [showDTW, patternData, selectedMatchIndex]);
+  }, [showDTW, activePrediction]);
 
-  // Render locked prediction (persisted prediction to compare against actual price)
-  useEffect(() => {
-    if (!chartRef.current) return;
+  // Calculate time remaining for prediction
+  const timeRemaining = useMemo(() => {
+    if (!activePrediction) return null;
+    const now = Date.now() / 1000;
+    const remaining = activePrediction.expiresAt - now;
+    if (remaining <= 0) return 'Expired';
 
-    // Remove existing locked prediction series
-    if (lockedPredictionSeriesRef.current) {
-      chartRef.current.removeSeries(lockedPredictionSeriesRef.current);
-      lockedPredictionSeriesRef.current = null;
-    }
-    if (lockedQuerySeriesRef.current) {
-      chartRef.current.removeSeries(lockedQuerySeriesRef.current);
-      lockedQuerySeriesRef.current = null;
-    }
-
-    if (!lockedPrediction) return;
-
-    // Create the locked query highlight (semi-transparent magenta)
-    const lockedQuerySeries = chartRef.current.addSeries(LineSeries, {
-      color: 'rgba(255, 0, 255, 0.4)', // Faded magenta
-      lineWidth: 2,
-      priceFormat: { type: 'price', precision: 2, minMove: 0.01 },
-    });
-    lockedQuerySeries.setData(lockedPrediction.queryData);
-    lockedQuerySeriesRef.current = lockedQuerySeries;
-
-    // Create locked prediction line
-    const predictionColor = lockedPrediction.direction === 'UP' ? 'rgba(0, 255, 136, 0.5)' :
-                            lockedPrediction.direction === 'DOWN' ? 'rgba(255, 51, 102, 0.5)' : 'rgba(255, 170, 0, 0.5)';
-
-    const lockedPredictionSeries = chartRef.current.addSeries(LineSeries, {
-      color: predictionColor,
-      lineWidth: 2,
-      lineStyle: LineStyle.Dotted,
-      priceFormat: { type: 'price', precision: 2, minMove: 0.01 },
-    });
-
-    // Recreate the prediction curve from locked data
-    const timeStep = 300; // 5 min in seconds
-    const predictionHorizon = 48;
-    const predictionData: { time: Time; value: number }[] = [
-      { time: lockedPrediction.queryEndTime as Time, value: lockedPrediction.currentPrice },
-    ];
-
-    for (let i = 1; i <= predictionHorizon; i++) {
-      const progress = i / predictionHorizon;
-      const easedProgress = 1 - Math.pow(1 - progress, 2);
-      const interpolatedPrice = lockedPrediction.currentPrice + (lockedPrediction.predictedPrice - lockedPrediction.currentPrice) * easedProgress;
-      predictionData.push({
-        time: (lockedPrediction.queryEndTime + i * timeStep) as Time,
-        value: interpolatedPrice,
-      });
-    }
-
-    lockedPredictionSeries.setData(predictionData);
-    lockedPredictionSeriesRef.current = lockedPredictionSeries;
-
-  }, [lockedPrediction]);
+    const hours = Math.floor(remaining / 3600);
+    const minutes = Math.floor((remaining % 3600) / 60);
+    return `${hours}h ${minutes}m`;
+  }, [activePrediction, priceHistory]); // Re-calculate when price updates
 
   if (!tokenId) {
     return (
@@ -480,23 +477,28 @@ export function PriceChart({ tokenId, outcome = 'YES' }: PriceChartProps) {
                 <span className="text-terminal-muted">Analyzed</span>
               </div>
               <div className="flex items-center gap-1">
-                <div className="w-4 h-0.5 border-t-2 border-dashed" style={{ borderColor: patternData.matches[selectedMatchIndex]?.direction === 'UP' ? '#00ff88' : patternData.matches[selectedMatchIndex]?.direction === 'DOWN' ? '#ff3366' : '#ffaa00' }}></div>
+                <div className="w-4 h-0.5 border-t-2 border-dashed" style={{ borderColor: activePrediction?.direction === 'UP' ? '#00ff88' : activePrediction?.direction === 'DOWN' ? '#ff3366' : '#ffaa00' }}></div>
                 <span className="text-terminal-muted">4h Prediction</span>
               </div>
             </div>
-            {/* Show the predicted move for this match */}
-            {patternData.matches[selectedMatchIndex] && (
+            {/* Show the predicted move */}
+            {activePrediction && (
               <div className="flex items-center gap-2 mt-1">
                 <span className={`font-bold ${
-                  patternData.matches[selectedMatchIndex].direction === 'UP' ? 'text-neon-green' :
-                  patternData.matches[selectedMatchIndex].direction === 'DOWN' ? 'text-neon-red' : 'text-neon-amber'
+                  activePrediction.direction === 'UP' ? 'text-neon-green' :
+                  activePrediction.direction === 'DOWN' ? 'text-neon-red' : 'text-neon-amber'
                 }`}>
-                  {patternData.matches[selectedMatchIndex].direction === 'UP' ? '+' : ''}
-                  {((patternData.matches[selectedMatchIndex].outcome4h ?? 0) * 100).toFixed(2)}%
+                  {activePrediction.direction === 'UP' ? '+' : ''}
+                  {((activePrediction.predictedPrice - activePrediction.currentPrice) * 100).toFixed(2)}%
                 </span>
                 <span className="text-terminal-muted">
-                  ({patternData.matches[selectedMatchIndex].similarity}% match)
+                  ({activePrediction.similarity}% match)
                 </span>
+                {timeRemaining && (
+                  <span className="text-neon-cyan">
+                    {timeRemaining}
+                  </span>
+                )}
               </div>
             )}
             {patternData.matches.length > 1 && (
@@ -523,48 +525,6 @@ export function PriceChart({ tokenId, outcome = 'YES' }: PriceChartProps) {
             {patternData.matches[selectedMatchIndex] && (
               <div className="mt-1 text-[8px] text-terminal-muted truncate max-w-[200px]">
                 From: {patternData.matches[selectedMatchIndex].marketQuestion}
-              </div>
-            )}
-            {/* Lock/Unlock prediction button */}
-            <button
-              onClick={() => {
-                if (lockedPrediction) {
-                  // Unlock
-                  setLockedPrediction(null);
-                } else if (patternData.matches[selectedMatchIndex]) {
-                  // Lock current prediction
-                  const match = patternData.matches[selectedMatchIndex];
-                  const queryStartTime = new Date(patternData.query.startTime).getTime() / 1000;
-                  const queryEndTime = new Date(patternData.query.endTime).getTime() / 1000;
-                  const queryDuration = queryEndTime - queryStartTime;
-                  const timeStep = queryDuration / (patternData.query.data.length - 1);
-                  const currentPrice = patternData.query.data[patternData.query.data.length - 1];
-                  const outcomeValue = match.outcome4h ?? 0;
-
-                  setLockedPrediction({
-                    queryEndTime,
-                    currentPrice,
-                    predictedPrice: currentPrice + outcomeValue,
-                    direction: match.direction ?? 'FLAT',
-                    similarity: match.similarity,
-                    queryData: patternData.query.data.map((value, i) => ({
-                      time: (queryStartTime + i * timeStep) as Time,
-                      value,
-                    })),
-                  });
-                }
-              }}
-              className={`mt-2 px-2 py-0.5 text-[8px] rounded border transition-all ${
-                lockedPrediction
-                  ? 'bg-neon-amber/20 border-neon-amber/50 text-neon-amber hover:bg-neon-amber/30'
-                  : 'bg-terminal-border/50 border-terminal-border text-terminal-muted hover:text-white hover:border-neon-cyan'
-              }`}
-            >
-              {lockedPrediction ? '🔒 UNLOCK' : '📌 LOCK PREDICTION'}
-            </button>
-            {lockedPrediction && (
-              <div className="mt-1 text-[7px] text-neon-amber/70">
-                Prediction locked - watch actual price vs prediction
               </div>
             )}
           </div>
