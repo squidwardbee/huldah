@@ -4,7 +4,9 @@
   "type": "module",
   "scripts": {
     "dev": "tsx watch src/index.ts",
-    "build": "tsc",
+    "build": "tsc && npm run copy:migrations && npm run db:migrate:build",
+    "copy:migrations": "node -e \"require('fs').cpSync('src/db', 'dist/db', {recursive: true})\"",
+    "db:migrate:build": "node dist/scripts/runMigrations.js",
     "start": "node dist/index.js",
     "test": "vitest run",
     "test:watch": "vitest",
