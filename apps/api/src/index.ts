@@ -1166,6 +1166,28 @@ app.get('/api/patterns/match/:tokenId', async (req, res) => {
     // Validate candle interval - only allow 5, 15, or 60 minutes
     const candleInterval = ([5, 15, 60].includes(candleIntervalRaw) ? candleIntervalRaw : 5) as 5 | 15 | 60;
 
+    // Auto-backfill: Check if this token has candle data, if not backfill it
+    const candleCheck = await db.query(
+      'SELECT COUNT(*) FROM price_candles WHERE token_id = $1',
+      [tokenId]
+    );
+    if (parseInt(candleCheck.rows[0].count) < windowSize) {
+      // Get market info for this token
+      const marketInfo = await db.query(
+        `SELECT condition_id, question FROM markets
+         WHERE yes_token_id = $1 OR no_token_id = $1
+         LIMIT 1`,
+        [tokenId]
+      );
+      const marketId = marketInfo.rows[0]?.condition_id || null;
+      const marketQuestion = marketInfo.rows[0]?.question || null;
+
+      // Backfill in background (don't await, let it run async)
+      patternService.backfillMarket(tokenId, marketId, marketQuestion)
+        .then(r => console.log(`[AutoBackfill] ${tokenId}: ${r.candles} candles, ${r.patterns} patterns`))
+        .catch(e => console.error(`[AutoBackfill] Failed for ${tokenId}:`, e.message));
+    }
+
     const result = await patternService.searchPatterns(
       tokenId,
       windowSize,
