@@ -176,6 +176,8 @@ export function useWalletTrading() {
 
   // Track if we've tried auto-init for this address
   const hasTriedAutoInit = useRef(false);
+  // Synchronous lock to prevent concurrent initialization calls
+  const isInitializingRef = useRef(false);
 
   // Reset auto-init flag when address changes
   useEffect(() => {
@@ -197,12 +199,20 @@ export function useWalletTrading() {
       return true;
     }
 
+    // Prevent concurrent initialization (synchronous check with ref)
+    if (isInitializingRef.current) {
+      console.log('[useWalletTrading] Initialization already in progress, skipping duplicate call');
+      return false;
+    }
+
     // Check geoblock
     if (geoblock?.blocked) {
       setError(`Trading blocked in ${geoblock.country}. Use a VPN in a supported region.`);
       return false;
     }
 
+    // Set synchronous lock immediately before any async work
+    isInitializingRef.current = true;
     setIsInitializing(true);
     setError(null);
 
@@ -368,6 +378,7 @@ export function useWalletTrading() {
       clobClientRef.current = null;
       return false;
     } finally {
+      isInitializingRef.current = false;
       setIsInitializing(false);
     }
   }, [connector, address, isReady, geoblock, proxyWallet, chainId, switchChainAsync]);
