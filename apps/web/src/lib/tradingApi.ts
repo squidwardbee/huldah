@@ -228,6 +228,31 @@ export async function getMarketHolders(conditionId: string, limit = 50) {
   }[];
 }
 
+// DTW Insider Analysis
+export interface WalletDTWScore {
+  walletAddress: string;
+  dtwScore: number;
+  correlation: number;
+  tradeCount: number;
+  totalVolume: number;
+  avgTradeSize: number;
+  profitDirection: 'YES' | 'NO' | 'MIXED';
+}
+
+export interface MarketInsidersResponse {
+  tokenId: string;
+  insiders: WalletDTWScore[];
+  computedAt: string;
+}
+
+export async function getMarketInsiders(tokenId: string, refresh = false): Promise<MarketInsidersResponse> {
+  const params = new URLSearchParams({ limit: '10' });
+  if (refresh) params.append('refresh', 'true');
+
+  const { data } = await api.get(`/api/trading/market/${tokenId}/insiders?${params}`);
+  return data;
+}
+
 // Market trades from Polymarket Data API
 export interface MarketTrade {
   txHash: string;
@@ -288,6 +313,90 @@ export async function getPriceHistory(
   } catch (err) {
     console.error('Error fetching price history:', err);
     return [];
+  }
+}
+
+// Pattern Matching API
+export interface PatternMatch {
+  tokenId: string;
+  marketId?: string;
+  marketQuestion?: string;
+  windowStart: string;
+  windowEnd: string;
+  distance: number;
+  similarity: number;
+  outcome1h?: number;
+  outcome4h?: number;
+  direction?: 'UP' | 'DOWN' | 'FLAT';
+  patternData?: number[]; // Normalized pattern data for visualization
+}
+
+export interface PatternSearchResult {
+  query: {
+    startTime: string;
+    endTime: string;
+    data: number[];
+    normalized: number[];
+  };
+  matches: PatternMatch[];
+  statistics: {
+    totalMatches: number;
+    upCount: number;
+    downCount: number;
+    flatCount: number;
+    upPercentage: number;
+    downPercentage: number;
+    avgUpMove: number;
+    avgDownMove: number;
+    avgDistance: number;
+  };
+  prediction: {
+    direction: 'UP' | 'DOWN' | 'NEUTRAL';
+    confidence: number;
+    expectedMove: number;
+  };
+}
+
+export async function getPatternMatch(
+  tokenId: string,
+  options: {
+    windowSize?: number;
+    horizon?: '1h' | '4h';
+    maxDistance?: number;
+    topK?: number;
+  } = {}
+): Promise<PatternSearchResult | null> {
+  try {
+    const params = new URLSearchParams();
+    if (options.windowSize) params.set('windowSize', options.windowSize.toString());
+    if (options.horizon) params.set('horizon', options.horizon);
+    if (options.maxDistance) params.set('maxDistance', options.maxDistance.toString());
+    if (options.topK) params.set('topK', options.topK.toString());
+
+    const queryString = params.toString();
+    const url = `/api/patterns/match/${tokenId}${queryString ? `?${queryString}` : ''}`;
+
+    const { data } = await api.get(url);
+    return data;
+  } catch (err) {
+    console.error('Error fetching pattern match:', err);
+    return null;
+  }
+}
+
+export interface PatternStats {
+  totalCandles: number;
+  totalPatterns: number;
+  uniqueMarkets: number;
+}
+
+export async function getPatternStats(): Promise<PatternStats | null> {
+  try {
+    const { data } = await api.get('/api/patterns/stats');
+    return data;
+  } catch (err) {
+    console.error('Error fetching pattern stats:', err);
+    return null;
   }
 }
 

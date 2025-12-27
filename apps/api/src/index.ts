@@ -21,6 +21,8 @@ import { MarketSyncService } from './services/marketSync.js';
 import { InsiderPredictor, TrainingExporter } from './services/ml/index.js';
 import { WalletProfileService } from './services/walletProfileService.js';
 import { WalletObserver } from './services/walletObserver.js';
+import { DTWService } from './services/dtwService.js';
+import { PatternService } from './services/patternService.js';
 import { WalletQueryParams, WalletTag } from '@huldah/shared';
 import {
   OrderExecutor,
@@ -80,6 +82,8 @@ const insiderPredictor = new InsiderPredictor(db);
 const trainingExporter = new TrainingExporter(db);
 const walletProfileService = new WalletProfileService(db);
 const walletObserver = new WalletObserver(db, redis);
+const dtwService = new DTWService(db);
+const patternService = new PatternService(db);
 
 // Trading executor (initialized lazily on first trade)
 let orderExecutor: OrderExecutor | null = null;
@@ -1040,6 +1044,42 @@ app.get('/api/trading/market/:tokenId', async (req, res) => {
   }
 });
 
+// Get DTW insider analysis for a market
+app.get('/api/trading/market/:tokenId/insiders', async (req, res) => {
+  try {
+    const { tokenId } = req.params;
+    const limit = Math.min(parseInt(req.query.limit as string) || 10, 50);
+    const refresh = req.query.refresh === 'true';
+
+    if (!tokenId) {
+      return res.status(400).json({ error: 'Token ID required' });
+    }
+
+    let scores;
+
+    if (refresh) {
+      // Compute fresh scores
+      scores = await dtwService.getMarketInsiders(tokenId, limit);
+    } else {
+      // Try cached scores first
+      scores = await dtwService.getStoredScores(tokenId, limit);
+      if (scores.length === 0) {
+        // No cached data, compute fresh
+        scores = await dtwService.getMarketInsiders(tokenId, limit);
+      }
+    }
+
+    res.json({
+      tokenId,
+      insiders: scores,
+      computedAt: new Date().toISOString()
+    });
+  } catch (err: any) {
+    console.error('Error fetching DTW scores:', err.message || err);
+    res.status(500).json({ error: 'Failed to compute insider analysis' });
+  }
+});
+
 // Get order history from database
 app.get('/api/trading/orders/history', async (req, res) => {
   try {
@@ -1109,6 +1149,118 @@ app.get('/api/trading/stats', async (_req, res) => {
   } catch (err) {
     console.error('Error fetching trading stats:', err);
     res.status(500).json({ error: 'Failed to fetch trading stats' });
+  }
+});
+
+// ============ PATTERN MATCHING ENDPOINTS ============
+
+// Search for similar historical patterns
+app.get('/api/patterns/match/:tokenId', async (req, res) => {
+  try {
+    const { tokenId } = req.params;
+    const windowSize = parseInt(req.query.windowSize as string) || 20;
+    const horizon = (req.query.horizon as '1h' | '4h') || '4h';
+    const maxDistance = parseFloat(req.query.maxDistance as string) || 0.5;
+    const topK = parseInt(req.query.topK as string) || 100;
+
+    const result = await patternService.searchPatterns(
+      tokenId,
+      windowSize,
+      horizon,
+      maxDistance,
+      topK
+    );
+
+    res.json(result);
+  } catch (error) {
+    console.error('[PatternMatch] Error:', error);
+    res.status(500).json({
+      error: 'Failed to search patterns',
+      message: error instanceof Error ? error.message : 'Unknown error',
+    });
+  }
+});
+
+// Get pattern matching statistics
+app.get('/api/patterns/stats', async (_req, res) => {
+  try {
+    const stats = await patternService.getStatistics();
+    res.json(stats);
+  } catch (error) {
+    console.error('[PatternStats] Error:', error);
+    res.status(500).json({ error: 'Failed to get pattern statistics' });
+  }
+});
+
+// Backfill historical data for a market (admin/manual trigger)
+app.post('/api/patterns/backfill', async (req, res) => {
+  try {
+    const { tokenId, marketId, marketQuestion } = req.body;
+
+    if (!tokenId) {
+      return res.status(400).json({ error: 'tokenId is required' });
+    }
+
+    const result = await patternService.backfillMarket(tokenId, marketId || null, marketQuestion || null);
+    res.json({
+      success: true,
+      ...result,
+    });
+  } catch (error) {
+    console.error('[PatternBackfill] Error:', error);
+    res.status(500).json({ error: 'Failed to backfill market data' });
+  }
+});
+
+// Backfill multiple markets from active markets list
+app.post('/api/patterns/backfill-active', async (req, res) => {
+  try {
+    const limit = parseInt(req.query.limit as string) || 50;
+
+    // Get active (unresolved) markets
+    const { rows: markets } = await db.query(`
+      SELECT condition_id, yes_token_id, no_token_id, question
+      FROM markets
+      WHERE resolved = false
+      ORDER BY volume DESC
+      LIMIT $1
+    `, [limit]);
+
+    const results = [];
+    for (const market of markets) {
+      try {
+        // Backfill YES token
+        if (market.yes_token_id) {
+          const yesResult = await patternService.backfillMarket(
+            market.yes_token_id,
+            market.condition_id,
+            market.question
+          );
+          results.push({ tokenId: market.yes_token_id, outcome: 'YES', ...yesResult });
+        }
+
+        // Backfill NO token
+        if (market.no_token_id) {
+          const noResult = await patternService.backfillMarket(
+            market.no_token_id,
+            market.condition_id,
+            market.question
+          );
+          results.push({ tokenId: market.no_token_id, outcome: 'NO', ...noResult });
+        }
+      } catch (err) {
+        console.error(`[PatternBackfill] Error backfilling ${market.condition_id}:`, err);
+      }
+    }
+
+    res.json({
+      success: true,
+      marketsProcessed: markets.length,
+      results,
+    });
+  } catch (error) {
+    console.error('[PatternBackfillActive] Error:', error);
+    res.status(500).json({ error: 'Failed to backfill active markets' });
   }
 });
 

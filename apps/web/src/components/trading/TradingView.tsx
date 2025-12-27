@@ -381,7 +381,7 @@ export function TradingView({ initialMarket, onMarketCleared }: TradingViewProps
                 {orderbookCollapsed && (
                   <div className="flex-1 flex items-center justify-center">
                     <span
-                      className="text-terminal-muted text-[9px] font-mono"
+                      className="text-[9px] font-mono text-terminal-muted"
                       style={{ writingMode: 'vertical-rl', transform: 'rotate(180deg)' }}
                     >
                       {rightPanelView === 'book' ? 'BOOK' : 'TRADES'}
