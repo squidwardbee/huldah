@@ -1162,13 +1162,17 @@ app.get('/api/patterns/match/:tokenId', async (req, res) => {
     const horizon = (req.query.horizon as '1h' | '4h') || '4h';
     const maxDistance = parseFloat(req.query.maxDistance as string) || 0.5;
     const topK = parseInt(req.query.topK as string) || 100;
+    const candleIntervalRaw = parseInt(req.query.interval as string) || 5;
+    // Validate candle interval - only allow 5, 15, or 60 minutes
+    const candleInterval = ([5, 15, 60].includes(candleIntervalRaw) ? candleIntervalRaw : 5) as 5 | 15 | 60;
 
     const result = await patternService.searchPatterns(
       tokenId,
       windowSize,
       horizon,
       maxDistance,
-      topK
+      topK,
+      candleInterval
     );
 
     res.json(result);

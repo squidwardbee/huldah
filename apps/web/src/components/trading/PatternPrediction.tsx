@@ -4,12 +4,13 @@ import { getPatternMatch } from '../../lib/tradingApi';
 interface PatternPredictionProps {
   tokenId: string;
   onClose?: () => void;
+  interval?: 5 | 15 | 60;
 }
 
-export function PatternPrediction({ tokenId, onClose }: PatternPredictionProps) {
+export function PatternPrediction({ tokenId, onClose, interval = 5 }: PatternPredictionProps) {
   const { data, isLoading, error, refetch } = useQuery({
-    queryKey: ['patternMatch', tokenId],
-    queryFn: () => getPatternMatch(tokenId, { horizon: '4h', topK: 100 }),
+    queryKey: ['patternMatch', tokenId, interval],
+    queryFn: () => getPatternMatch(tokenId, { horizon: '4h', topK: 100, interval }),
     enabled: !!tokenId,
     staleTime: 60000, // Cache for 1 minute
     refetchInterval: 300000, // Refetch every 5 minutes
@@ -99,7 +100,9 @@ export function PatternPrediction({ tokenId, onClose }: PatternPredictionProps) 
       <div className="flex items-center justify-between mb-3">
         <div className="flex items-center gap-2">
           <span className="text-[10px] font-mono text-neon-magenta font-bold">DTW PATTERN</span>
-          <span className="text-[9px] text-terminal-muted">4h horizon</span>
+          <span className="text-[9px] text-terminal-muted">
+            {interval === 60 ? '1h' : `${interval}m`} candles
+          </span>
         </div>
         {onClose && (
           <button onClick={onClose} className="text-terminal-muted hover:text-white text-xs">

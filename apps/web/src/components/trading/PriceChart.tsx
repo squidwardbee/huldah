@@ -66,6 +66,7 @@ export function PriceChart({ tokenId, outcome = 'YES' }: PriceChartProps) {
   const [interval, setInterval] = useState<TimeInterval>('1d');
   const [showDTW, setShowDTW] = useState(false);
   const [selectedMatchIndex, setSelectedMatchIndex] = useState(0);
+  const [dtwInterval, setDtwInterval] = useState<5 | 15 | 60>(5); // DTW candle interval
 
   // Store the active prediction - once set, it stays fixed until 4h expires or user changes match
   const [activePrediction, setActivePrediction] = useState<{
@@ -96,8 +97,8 @@ export function PriceChart({ tokenId, outcome = 'YES' }: PriceChartProps) {
 
   // Fetch DTW pattern match data when DTW is enabled
   const { data: patternData } = useQuery({
-    queryKey: ['patternMatch', tokenId],
-    queryFn: () => getPatternMatch(tokenId, { horizon: '4h', topK: 100 }),
+    queryKey: ['patternMatch', tokenId, dtwInterval],
+    queryFn: () => getPatternMatch(tokenId, { horizon: '4h', topK: 100, interval: dtwInterval }),
     enabled: !!tokenId && showDTW,
     staleTime: 60000,
     refetchInterval: 300000,
@@ -449,11 +450,35 @@ export function PriceChart({ tokenId, outcome = 'YES' }: PriceChartProps) {
             </svg>
             DTW
           </button>
+          {/* DTW Interval selector - only show when DTW is enabled */}
+          {showDTW && (
+            <div className="flex ml-1">
+              {([5, 15, 60] as const).map((int) => (
+                <button
+                  key={int}
+                  onClick={() => {
+                    setDtwInterval(int);
+                    setActivePrediction(null); // Reset prediction when interval changes
+                  }}
+                  className={`px-1 py-0.5 text-[8px] font-mono transition-all ${
+                    dtwInterval === int
+                      ? 'text-neon-magenta'
+                      : 'text-terminal-muted hover:text-neon-magenta/70'
+                  }`}
+                  title={`${int} minute candles`}
+                >
+                  {int === 60 ? '1H' : `${int}M`}
+                </button>
+              ))}
+            </div>
+          )}
         </div>
       </div>
 
-      {/* Chart container */}
-      <div className="flex-1 relative min-h-0">
+      {/* Chart container - flex row when DTW is shown to put panel on right */}
+      <div className={`flex-1 flex min-h-0 ${showDTW ? 'flex-row' : ''}`}>
+        {/* Main chart area */}
+        <div className="flex-1 relative min-h-0">
         {isLoading && (
           <div className="absolute inset-0 flex items-center justify-center bg-terminal-surface/80 z-10">
             <div className="text-terminal-muted text-xs animate-pulse">Loading...</div>
@@ -529,11 +554,12 @@ export function PriceChart({ tokenId, outcome = 'YES' }: PriceChartProps) {
             )}
           </div>
         )}
+        </div>
 
-        {/* DTW Pattern Prediction Overlay */}
+        {/* DTW Pattern Prediction Panel - right side */}
         {showDTW && (
-          <div className="absolute top-2 right-2 z-20 w-64">
-            <PatternPrediction tokenId={tokenId} onClose={() => setShowDTW(false)} />
+          <div className="w-56 shrink-0 border-l border-terminal-border overflow-y-auto">
+            <PatternPrediction tokenId={tokenId} interval={dtwInterval} onClose={() => setShowDTW(false)} />
           </div>
         )}
       </div>

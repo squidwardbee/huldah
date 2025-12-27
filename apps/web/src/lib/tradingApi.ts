@@ -364,6 +364,7 @@ export async function getPatternMatch(
     horizon?: '1h' | '4h';
     maxDistance?: number;
     topK?: number;
+    interval?: 5 | 15 | 60; // Candle interval in minutes
   } = {}
 ): Promise<PatternSearchResult | null> {
   try {
@@ -372,6 +373,7 @@ export async function getPatternMatch(
     if (options.horizon) params.set('horizon', options.horizon);
     if (options.maxDistance) params.set('maxDistance', options.maxDistance.toString());
     if (options.topK) params.set('topK', options.topK.toString());
+    if (options.interval) params.set('interval', options.interval.toString());
 
     const queryString = params.toString();
     const url = `/api/patterns/match/${tokenId}${queryString ? `?${queryString}` : ''}`;

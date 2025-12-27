@@ -244,47 +244,138 @@ export class PatternService {
 
   /**
    * Get stored pattern windows for searching
+   * For larger candle intervals (15m, 60m), we re-aggregate from stored 5-min candles at runtime
    */
   async getPatternWindows(
     patternLength: number = 20,
     excludeTokenId?: string,
-    limit: number = 5000
+    limit: number = 5000,
+    candleInterval: 5 | 15 | 60 = 5
   ): Promise<StoredPattern[]> {
-    const result = await this.db.query(
-      `SELECT id, token_id, market_id, market_question, window_start, window_end,
-              pattern_data, outcome_1h, outcome_4h, outcome_24h
-       FROM pattern_windows
-       WHERE pattern_length = $1
-         AND ($2::text IS NULL OR token_id != $2)
-         AND (outcome_1h IS NOT NULL OR outcome_4h IS NOT NULL)
-       ORDER BY window_start DESC
-       LIMIT $3`,
-      [patternLength, excludeTokenId || null, limit]
+    // For 5-minute candles, use stored pattern windows directly
+    if (candleInterval === 5) {
+      const result = await this.db.query(
+        `SELECT id, token_id, market_id, market_question, window_start, window_end,
+                pattern_data, outcome_1h, outcome_4h, outcome_24h
+         FROM pattern_windows
+         WHERE pattern_length = $1
+           AND ($2::text IS NULL OR token_id != $2)
+           AND (outcome_1h IS NOT NULL OR outcome_4h IS NOT NULL)
+         ORDER BY window_start DESC
+         LIMIT $3`,
+        [patternLength, excludeTokenId || null, limit]
+      );
+
+      return result.rows.map((row) => ({
+        id: row.id,
+        token_id: row.token_id,
+        market_id: row.market_id,
+        market_question: row.market_question,
+        window_start: new Date(row.window_start),
+        window_end: new Date(row.window_end),
+        pattern_data: row.pattern_data.map((v: string) => parseFloat(v)),
+        outcome_1h: row.outcome_1h ? parseFloat(row.outcome_1h) : null,
+        outcome_4h: row.outcome_4h ? parseFloat(row.outcome_4h) : null,
+        outcome_24h: row.outcome_24h ? parseFloat(row.outcome_24h) : null,
+      }));
+    }
+
+    // For 15m or 60m intervals, we need to generate patterns from raw candles
+    // Get unique tokens that have enough candle data
+    const tokensResult = await this.db.query(
+      `SELECT DISTINCT token_id, market_id,
+              (SELECT question FROM markets WHERE condition_id = price_candles.market_id LIMIT 1) as market_question
+       FROM price_candles
+       GROUP BY token_id, market_id
+       HAVING COUNT(*) > $1
+       LIMIT 50`,
+      [patternLength * (candleInterval / 5) * 2] // Need enough 5-min candles
     );
 
-    return result.rows.map((row) => ({
-      id: row.id,
-      token_id: row.token_id,
-      market_id: row.market_id,
-      market_question: row.market_question,
-      window_start: new Date(row.window_start),
-      window_end: new Date(row.window_end),
-      pattern_data: row.pattern_data.map((v: string) => parseFloat(v)),
-      outcome_1h: row.outcome_1h ? parseFloat(row.outcome_1h) : null,
-      outcome_4h: row.outcome_4h ? parseFloat(row.outcome_4h) : null,
-      outcome_24h: row.outcome_24h ? parseFloat(row.outcome_24h) : null,
-    }));
+    const patterns: StoredPattern[] = [];
+    const aggregationFactor = candleInterval / 5; // How many 5-min candles per larger candle
+    const outcomeCandles1h = Math.ceil(60 / candleInterval); // Candles for 1h outcome
+    const outcomeCandles4h = Math.ceil(240 / candleInterval); // Candles for 4h outcome
+
+    for (const tokenRow of tokensResult.rows) {
+      // Get all 5-min candles for this token
+      const candlesResult = await this.db.query(
+        `SELECT time, close FROM price_candles
+         WHERE token_id = $1
+         ORDER BY time ASC`,
+        [tokenRow.token_id]
+      );
+
+      if (candlesResult.rows.length < patternLength * aggregationFactor + outcomeCandles4h * aggregationFactor) {
+        continue;
+      }
+
+      // Aggregate to larger candles
+      const aggregatedCandles: { time: Date; close: number }[] = [];
+      for (let i = 0; i < candlesResult.rows.length; i += aggregationFactor) {
+        const chunk = candlesResult.rows.slice(i, i + aggregationFactor);
+        if (chunk.length === aggregationFactor) {
+          aggregatedCandles.push({
+            time: new Date(chunk[0].time),
+            close: parseFloat(chunk[chunk.length - 1].close), // Use closing price of chunk
+          });
+        }
+      }
+
+      // Generate sliding window patterns
+      const closePrices = aggregatedCandles.map(c => c.close);
+
+      for (let i = 0; i <= closePrices.length - patternLength - outcomeCandles4h; i++) {
+        const window = closePrices.slice(i, i + patternLength);
+        const normalized = normalizeTimeSeries(window);
+        const endPrice = window[window.length - 1];
+
+        // Calculate outcomes
+        const price1h = i + patternLength + outcomeCandles1h < closePrices.length
+          ? closePrices[i + patternLength + outcomeCandles1h]
+          : null;
+        const price4h = i + patternLength + outcomeCandles4h < closePrices.length
+          ? closePrices[i + patternLength + outcomeCandles4h]
+          : null;
+
+        patterns.push({
+          id: patterns.length,
+          token_id: tokenRow.token_id,
+          market_id: tokenRow.market_id,
+          market_question: tokenRow.market_question || 'Unknown',
+          window_start: aggregatedCandles[i].time,
+          window_end: aggregatedCandles[i + patternLength - 1].time,
+          pattern_data: normalized,
+          outcome_1h: price1h !== null ? price1h - endPrice : null,
+          outcome_4h: price4h !== null ? price4h - endPrice : null,
+          outcome_24h: null,
+        });
+
+        if (patterns.length >= limit) break;
+      }
+
+      if (patterns.length >= limit) break;
+    }
+
+    return patterns;
   }
 
   /**
    * Search for similar patterns using DTW
+   * @param tokenId - The token to analyze
+   * @param windowSize - Number of candles in the pattern window (default 20)
+   * @param horizon - Prediction horizon: '1h' or '4h'
+   * @param maxDistance - Maximum DTW distance threshold
+   * @param topK - Return top K matches
+   * @param candleInterval - Candle interval in minutes: 5, 15, or 60 (default 5)
    */
   async searchPatterns(
     tokenId: string,
     windowSize: number = 20,
     horizon: '1h' | '4h' = '4h',
-    maxDistance: number = 5.0, // Z-normalized DTW distances are typically 0-10+
-    topK: number = 100
+    maxDistance: number = 5.0,
+    topK: number = 100,
+    candleInterval: 5 | 15 | 60 = 5
   ): Promise<PatternSearchResult> {
     // Get current price data for this token
     const priceHistory = await this.fetchPriceHistory(tokenId);
@@ -292,7 +383,7 @@ export class PatternService {
       throw new Error('Not enough price history for pattern matching');
     }
 
-    const candles = this.aggregateToCandles(priceHistory, 5);
+    const candles = this.aggregateToCandles(priceHistory, candleInterval);
     if (candles.length < windowSize) {
       throw new Error('Not enough candles for pattern matching');
     }
@@ -307,7 +398,7 @@ export class PatternService {
     const endTime = recentCandles[recentCandles.length - 1].time;
 
     // Get historical patterns (include same token's history for self-similar pattern matching)
-    const historicalPatterns = await this.getPatternWindows(windowSize, undefined, 5000);
+    const historicalPatterns = await this.getPatternWindows(windowSize, undefined, 5000, candleInterval);
 
     if (historicalPatterns.length === 0) {
       return {
