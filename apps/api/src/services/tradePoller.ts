@@ -1,6 +1,7 @@
 import axios from 'axios';
 import { Pool } from 'pg';
 import Redis from 'ioredis';
+import { WalletObserver } from './walletObserver.js';
 
 const DATA_API = 'https://data-api.polymarket.com';
 const WHALE_THRESHOLD = 1000;
@@ -22,13 +23,15 @@ interface DataTrade {
 export class TradePoller {
   private db: Pool;
   private redis: Redis;
+  private walletObserver: WalletObserver;
   private lastTimestamp: number = Math.floor(Date.now() / 1000) - 60;
   private pollInterval: NodeJS.Timeout | null = null;
   private recentTxHashes: Set<string> = new Set();
 
-  constructor(db: Pool, redis: Redis) {
+  constructor(db: Pool, redis: Redis, walletObserver?: WalletObserver) {
     this.db = db;
     this.redis = redis;
+    this.walletObserver = walletObserver || new WalletObserver(db, redis);
   }
 
   async start() {
@@ -115,6 +118,24 @@ export class TradePoller {
       ]);
 
       console.log(`[WHALE] ${trade.proxyWallet} - $${usdValue.toFixed(0)} ${trade.side}`);
+
+      // Notify subscribers of this wallet
+      const notifiedCount = await this.walletObserver.onWalletTrade({
+        walletAddress: trade.proxyWallet,
+        conditionId: trade.conditionId,
+        marketQuestion: trade.title,
+        outcome: (trade.outcome as 'YES' | 'NO') || 'YES',
+        side: trade.side as 'BUY' | 'SELL',
+        price: trade.price,
+        size: trade.size,
+        usdValue,
+        txHash: trade.transactionHash,
+        timestamp: new Date(trade.timestamp * 1000),
+      });
+
+      if (notifiedCount > 0) {
+        console.log(`[Poller] Notified ${notifiedCount} subscribers for ${trade.proxyWallet}`);
+      }
 
       // Broadcast to WebSocket clients
       await this.redis.publish('whale_trades', JSON.stringify({

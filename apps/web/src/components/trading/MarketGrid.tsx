@@ -1,5 +1,5 @@
-import { useInfiniteQuery } from '@tanstack/react-query';
-import { useState, useMemo, useRef, useCallback, useEffect } from 'react';
+import { useQuery } from '@tanstack/react-query';
+import { useState, useMemo, useEffect } from 'react';
 import { getMarkets, type Market, type SortBy } from '../../lib/tradingApi';
 
 interface MarketGridProps {
@@ -19,7 +19,8 @@ function formatVolume(volume: number | string | null | undefined): string {
 // Default image for markets without one
 const DEFAULT_IMAGE = 'https://polymarket.com/images/default-market.png';
 
-const PAGE_SIZE = 100; // Fetch 100 at a time
+const INITIAL_BATCH_SIZE = 50; // Fetch 50 first for quick UI population
+const FULL_BATCH_SIZE = 500; // Then fetch more for complete data
 
 // Category definitions with display names
 const CATEGORIES = [
@@ -56,52 +57,52 @@ export function MarketGrid({ onSelectMarket, selectedMarketId }: MarketGridProps
   const [showFilters, setShowFilters] = useState(false);
   const [activeFilterMenu, setActiveFilterMenu] = useState<'sort' | 'category' | null>(null);
 
-  // Infinite query for markets
-  const {
-    data,
-    isLoading,
-    fetchNextPage,
-    hasNextPage,
-    isFetchingNextPage,
-  } = useInfiniteQuery({
-    queryKey: ['markets-infinite', sortBy, selectedCategory],
-    queryFn: async ({ pageParam = 0 }) => {
-      // For special categories, we need to handle differently
-      const apiCategory = ['trending', 'breaking', 'new'].includes(selectedCategory || '')
-        ? undefined
-        : selectedCategory;
+  // For special categories, we need to handle differently
+  const apiCategory = ['trending', 'breaking', 'new'].includes(selectedCategory || '')
+    ? undefined
+    : selectedCategory;
 
-      const response = await getMarkets({
-        limit: PAGE_SIZE,
-        offset: pageParam,
-        category: apiCategory || undefined,
-        sortBy: sortBy,
-      });
-      return response;
-    },
-    getNextPageParam: (lastPage) => {
-      // Keep fetching until no more data
-      if (lastPage.pagination.hasMore) {
-        return lastPage.pagination.offset + lastPage.pagination.limit;
-      }
-      return undefined;
-    },
-    initialPageParam: 0,
+  // First query: fetch initial batch quickly (50 markets)
+  const {
+    data: initialData,
+    isLoading: isLoadingInitial,
+  } = useQuery({
+    queryKey: ['markets-initial', sortBy, apiCategory],
+    queryFn: () => getMarkets({
+      limit: INITIAL_BATCH_SIZE,
+      offset: 0,
+      category: apiCategory || undefined,
+      sortBy: sortBy,
+    }),
     staleTime: 30000,
   });
 
-  // Auto-fetch more pages until we have all markets
-  useEffect(() => {
-    if (hasNextPage && !isFetchingNextPage && !isLoading) {
-      fetchNextPage();
-    }
-  }, [hasNextPage, isFetchingNextPage, isLoading, fetchNextPage]);
+  // Second query: fetch full batch in background (500 markets)
+  const {
+    data: fullData,
+    isLoading: isLoadingFull,
+  } = useQuery({
+    queryKey: ['markets-full', sortBy, apiCategory],
+    queryFn: () => getMarkets({
+      limit: FULL_BATCH_SIZE,
+      offset: 0,
+      category: apiCategory || undefined,
+      sortBy: sortBy,
+    }),
+    staleTime: 30000,
+    // Only start this query once initial data is loaded
+    enabled: !!initialData,
+  });
 
-  // Flatten all pages into a single array
+  // Use full data if available, otherwise use initial data
   const allMarkets = useMemo(() => {
-    if (!data?.pages) return [];
-    return data.pages.flatMap(page => page.markets);
-  }, [data]);
+    if (fullData?.markets) return fullData.markets;
+    if (initialData?.markets) return initialData.markets;
+    return [];
+  }, [initialData, fullData]);
+
+  const isLoading = isLoadingInitial;
+  const isFetchingMore = isLoadingFull && !!initialData;
 
   // Filter out closed/resolved markets and sort into columns (no duplicates)
   // Priority: 1) Closing Soon (<7 days), 2) Trending (>$10M volume), 3) All (rest)
@@ -233,7 +234,7 @@ export function MarketGrid({ onSelectMarket, selectedMarketId }: MarketGridProps
     );
   }
 
-  const totalMarkets = data?.pages[0]?.pagination.total || allMarkets.length;
+  const totalMarkets = fullData?.pagination.total || initialData?.pagination.total || allMarkets.length;
 
   return (
     <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 h-full">
@@ -245,8 +246,7 @@ export function MarketGrid({ onSelectMarket, selectedMarketId }: MarketGridProps
         onSelectMarket={onSelectMarket}
         selectedMarketId={selectedMarketId}
         accentColor="magenta"
-        onLoadMore={hasNextPage && !isFetchingNextPage ? fetchNextPage : undefined}
-        isLoadingMore={isFetchingNextPage}
+        isLoadingMore={isFetchingMore}
       />
 
       {/* Trending Column */}
@@ -257,8 +257,7 @@ export function MarketGrid({ onSelectMarket, selectedMarketId }: MarketGridProps
         onSelectMarket={onSelectMarket}
         selectedMarketId={selectedMarketId}
         accentColor="amber"
-        onLoadMore={hasNextPage && !isFetchingNextPage ? fetchNextPage : undefined}
-        isLoadingMore={isFetchingNextPage}
+        isLoadingMore={isFetchingMore}
       />
 
       {/* All Markets Column with Filters */}
@@ -432,8 +431,7 @@ export function MarketGrid({ onSelectMarket, selectedMarketId }: MarketGridProps
           markets={allOpenMarkets}
           onSelectMarket={onSelectMarket}
           selectedMarketId={selectedMarketId}
-          onLoadMore={hasNextPage && !isFetchingNextPage ? fetchNextPage : undefined}
-          isLoadingMore={isFetchingNextPage}
+          isLoadingMore={isFetchingMore}
         />
       </div>
     </div>
@@ -447,7 +445,6 @@ interface MarketColumnProps {
   onSelectMarket: (market: Market) => void;
   selectedMarketId: string | null;
   accentColor: 'cyan' | 'amber' | 'magenta';
-  onLoadMore?: () => void;
   isLoadingMore?: boolean;
 }
 
@@ -458,7 +455,6 @@ function MarketColumn({
   onSelectMarket,
   selectedMarketId,
   accentColor,
-  onLoadMore,
   isLoadingMore,
 }: MarketColumnProps) {
   const colorClasses = {
@@ -487,7 +483,6 @@ function MarketColumn({
         markets={markets}
         onSelectMarket={onSelectMarket}
         selectedMarketId={selectedMarketId}
-        onLoadMore={onLoadMore}
         isLoadingMore={isLoadingMore}
       />
     </div>
@@ -498,7 +493,6 @@ interface MarketListProps {
   markets: Market[];
   onSelectMarket: (market: Market) => void;
   selectedMarketId: string | null;
-  onLoadMore?: () => void;
   isLoadingMore?: boolean;
 }
 
@@ -506,33 +500,10 @@ function MarketList({
   markets,
   onSelectMarket,
   selectedMarketId,
-  onLoadMore,
   isLoadingMore,
 }: MarketListProps) {
-  const scrollRef = useRef<HTMLDivElement>(null);
-
-  // Infinite scroll handler
-  const handleScroll = useCallback(() => {
-    if (!scrollRef.current || !onLoadMore || isLoadingMore) return;
-
-    const { scrollTop, scrollHeight, clientHeight } = scrollRef.current;
-    // Load more when scrolled to 80% of the list
-    if (scrollTop + clientHeight >= scrollHeight * 0.8) {
-      onLoadMore();
-    }
-  }, [onLoadMore, isLoadingMore]);
-
-  // Attach scroll listener
-  useEffect(() => {
-    const el = scrollRef.current;
-    if (!el) return;
-
-    el.addEventListener('scroll', handleScroll);
-    return () => el.removeEventListener('scroll', handleScroll);
-  }, [handleScroll]);
-
   return (
-    <div ref={scrollRef} className="flex-1 overflow-y-auto">
+    <div className="flex-1 overflow-y-auto">
       {markets.length === 0 ? (
         <div className="p-4 text-center text-terminal-muted text-xs">
           No markets found

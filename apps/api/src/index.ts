@@ -19,6 +19,9 @@ import { SubgraphClient } from './services/polymarket/subgraphClient.js';
 import { InsiderDetector } from './services/insiderDetector.js';
 import { MarketSyncService } from './services/marketSync.js';
 import { InsiderPredictor, TrainingExporter } from './services/ml/index.js';
+import { WalletProfileService } from './services/walletProfileService.js';
+import { WalletObserver } from './services/walletObserver.js';
+import { WalletQueryParams, WalletTag } from '@huldah/shared';
 import {
   OrderExecutor,
   createOrderExecutorFromEnv,
@@ -75,6 +78,8 @@ const insiderDetector = new InsiderDetector(db);
 const marketSync = new MarketSyncService(db);
 const insiderPredictor = new InsiderPredictor(db);
 const trainingExporter = new TrainingExporter(db);
+const walletProfileService = new WalletProfileService(db);
+const walletObserver = new WalletObserver(db, redis);
 
 // Trading executor (initialized lazily on first trade)
 let orderExecutor: OrderExecutor | null = null;
@@ -222,6 +227,261 @@ app.post('/api/wallets/seed', async (_req, res) => {
   } catch (err) {
     console.error('Error seeding wallets:', err);
     res.status(500).json({ error: 'Failed to seed wallets' });
+  }
+});
+
+// ============ WALLET INTELLIGENCE ENDPOINTS ============
+
+// List wallets with advanced filtering
+app.get('/api/intelligence/wallets', async (req, res) => {
+  try {
+    const params: WalletQueryParams = {
+      tags: req.query.tags ? (req.query.tags as string).split(',') as WalletTag[] : undefined,
+      minVolume: req.query.minVolume ? parseFloat(req.query.minVolume as string) : undefined,
+      maxVolume: req.query.maxVolume ? parseFloat(req.query.maxVolume as string) : undefined,
+      minWinRate: req.query.minWinRate ? parseFloat(req.query.minWinRate as string) : undefined,
+      minInsiderScore: req.query.minInsiderScore ? parseInt(req.query.minInsiderScore as string) : undefined,
+      minSmartMoneyScore: req.query.minSmartMoneyScore ? parseInt(req.query.minSmartMoneyScore as string) : undefined,
+      sortBy: req.query.sortBy as any,
+      sortOrder: req.query.sortOrder as 'asc' | 'desc',
+      limit: Math.min(parseInt(req.query.limit as string) || 50, 100),
+      offset: Math.max(parseInt(req.query.offset as string) || 0, 0),
+    };
+
+    const result = await walletProfileService.listWallets(params);
+    res.json(result);
+  } catch (err) {
+    console.error('Error listing wallets:', err);
+    res.status(500).json({ error: 'Failed to list wallets' });
+  }
+});
+
+// Get full wallet profile
+app.get('/api/intelligence/wallets/:address', async (req, res) => {
+  try {
+    const { address } = req.params;
+    const profile = await walletProfileService.getWalletProfile(address);
+
+    if (!profile) {
+      return res.status(404).json({ error: 'Wallet not found' });
+    }
+
+    res.json(profile);
+  } catch (err) {
+    console.error('Error fetching wallet profile:', err);
+    res.status(500).json({ error: 'Failed to fetch wallet profile' });
+  }
+});
+
+// Get wallet detail with trades and positions
+app.get('/api/intelligence/wallets/:address/detail', async (req, res) => {
+  try {
+    const { address } = req.params;
+    const detail = await walletProfileService.getWalletDetail(address);
+
+    if (!detail) {
+      return res.status(404).json({ error: 'Wallet not found' });
+    }
+
+    res.json(detail);
+  } catch (err) {
+    console.error('Error fetching wallet detail:', err);
+    res.status(500).json({ error: 'Failed to fetch wallet detail' });
+  }
+});
+
+// Get wallet trade history
+app.get('/api/intelligence/wallets/:address/trades', async (req, res) => {
+  try {
+    const { address } = req.params;
+    const limit = Math.min(parseInt(req.query.limit as string) || 100, 500);
+    const trades = await walletProfileService.getWalletTrades(address, limit);
+    res.json(trades);
+  } catch (err) {
+    console.error('Error fetching wallet trades:', err);
+    res.status(500).json({ error: 'Failed to fetch wallet trades' });
+  }
+});
+
+// Get wallet positions
+app.get('/api/intelligence/wallets/:address/positions', async (req, res) => {
+  try {
+    const { address } = req.params;
+    const positions = await walletProfileService.getWalletPositions(address);
+    res.json(positions);
+  } catch (err) {
+    console.error('Error fetching wallet positions:', err);
+    res.status(500).json({ error: 'Failed to fetch wallet positions' });
+  }
+});
+
+// Get wallet category performance
+app.get('/api/intelligence/wallets/:address/categories', async (req, res) => {
+  try {
+    const { address } = req.params;
+    const categories = await walletProfileService.getCategoryPerformance(address);
+    res.json(categories);
+  } catch (err) {
+    console.error('Error fetching category performance:', err);
+    res.status(500).json({ error: 'Failed to fetch category performance' });
+  }
+});
+
+// Get wallet snapshots (for ML training visualization)
+app.get('/api/intelligence/wallets/:address/snapshots', async (req, res) => {
+  try {
+    const { address } = req.params;
+    const days = Math.min(parseInt(req.query.days as string) || 30, 365);
+    const snapshots = await walletProfileService.getWalletSnapshots(address, days);
+    res.json(snapshots);
+  } catch (err) {
+    console.error('Error fetching wallet snapshots:', err);
+    res.status(500).json({ error: 'Failed to fetch wallet snapshots' });
+  }
+});
+
+// Get wallet cluster
+app.get('/api/intelligence/wallets/:address/cluster', async (req, res) => {
+  try {
+    const { address } = req.params;
+    const cluster = await walletProfileService.getWalletCluster(address);
+    res.json(cluster);
+  } catch (err) {
+    console.error('Error fetching wallet cluster:', err);
+    res.status(500).json({ error: 'Failed to fetch wallet cluster' });
+  }
+});
+
+// ============ WALLET SUBSCRIPTION ENDPOINTS ============
+
+// Subscribe to a wallet (auth required)
+app.post('/api/intelligence/wallets/:address/subscribe', authMiddleware, async (req, res) => {
+  try {
+    const { address } = req.params;
+    const { nickname, notes, notifyOnTrade, notifyOnWhaleTrade, notifyOnNewPosition, notifyOnPositionClosed } = req.body;
+
+    const subscription = await walletProfileService.subscribe(req.user!.id, address, {
+      nickname,
+      notes,
+      notifyOnTrade,
+      notifyOnWhaleTrade,
+      notifyOnNewPosition,
+      notifyOnPositionClosed,
+    });
+
+    res.json(subscription);
+  } catch (err) {
+    console.error('Error subscribing to wallet:', err);
+    res.status(500).json({ error: 'Failed to subscribe to wallet' });
+  }
+});
+
+// Unsubscribe from a wallet (auth required)
+app.delete('/api/intelligence/wallets/:address/subscribe', authMiddleware, async (req, res) => {
+  try {
+    const { address } = req.params;
+    const success = await walletProfileService.unsubscribe(req.user!.id, address);
+    res.json({ success });
+  } catch (err) {
+    console.error('Error unsubscribing from wallet:', err);
+    res.status(500).json({ error: 'Failed to unsubscribe from wallet' });
+  }
+});
+
+// Get user's subscriptions (auth required)
+app.get('/api/user/subscriptions', authMiddleware, async (req, res) => {
+  try {
+    const subscriptions = await walletProfileService.getUserSubscriptions(req.user!.id);
+    res.json(subscriptions);
+  } catch (err) {
+    console.error('Error fetching subscriptions:', err);
+    res.status(500).json({ error: 'Failed to fetch subscriptions' });
+  }
+});
+
+// Get subscriptions with wallet profiles (auth required)
+app.get('/api/user/subscriptions/detailed', authMiddleware, async (req, res) => {
+  try {
+    const subscriptions = await walletProfileService.getUserSubscriptions(req.user!.id);
+
+    // Fetch profiles for each subscribed wallet
+    const detailed = await Promise.all(
+      subscriptions.map(async (sub) => {
+        const profile = await walletProfileService.getWalletProfile(sub.walletAddress);
+        return {
+          subscription: sub,
+          wallet: profile,
+        };
+      })
+    );
+
+    res.json(detailed);
+  } catch (err) {
+    console.error('Error fetching detailed subscriptions:', err);
+    res.status(500).json({ error: 'Failed to fetch detailed subscriptions' });
+  }
+});
+
+// Get activity feed for user's subscribed wallets (auth required)
+app.get('/api/user/subscriptions/activity', authMiddleware, async (req, res) => {
+  try {
+    const limit = Math.min(parseInt(req.query.limit as string) || 50, 200);
+    const activity = await walletObserver.getUserActivityFeed(req.user!.id, limit);
+    res.json(activity);
+  } catch (err) {
+    console.error('Error fetching subscription activity:', err);
+    res.status(500).json({ error: 'Failed to fetch subscription activity' });
+  }
+});
+
+// Get undelivered notifications (auth required)
+app.get('/api/user/notifications/unread', authMiddleware, async (req, res) => {
+  try {
+    const limit = Math.min(parseInt(req.query.limit as string) || 100, 500);
+    const notifications = await walletObserver.getUndeliveredNotifications(req.user!.id, limit);
+    res.json(notifications);
+  } catch (err) {
+    console.error('Error fetching unread notifications:', err);
+    res.status(500).json({ error: 'Failed to fetch unread notifications' });
+  }
+});
+
+// Mark notifications as delivered (auth required)
+app.post('/api/user/notifications/mark-read', authMiddleware, async (req, res) => {
+  try {
+    const { ids } = req.body;
+    if (!Array.isArray(ids) || ids.length === 0) {
+      return res.status(400).json({ error: 'ids array is required' });
+    }
+    await walletObserver.markDelivered(ids);
+    res.json({ success: true, marked: ids.length });
+  } catch (err) {
+    console.error('Error marking notifications as read:', err);
+    res.status(500).json({ error: 'Failed to mark notifications as read' });
+  }
+});
+
+// Get subscription stats (admin)
+app.get('/api/intelligence/subscriptions/stats', async (_req, res) => {
+  try {
+    const stats = await walletObserver.getSubscriptionStats();
+    res.json(stats);
+  } catch (err) {
+    console.error('Error fetching subscription stats:', err);
+    res.status(500).json({ error: 'Failed to fetch subscription stats' });
+  }
+});
+
+// ============ SNAPSHOT ENDPOINTS ============
+
+// Manually trigger snapshot creation (admin)
+app.post('/api/intelligence/snapshots/create', async (_req, res) => {
+  try {
+    const count = await walletProfileService.createDailySnapshots();
+    res.json({ message: `Created ${count} wallet snapshots` });
+  } catch (err) {
+    console.error('Error creating snapshots:', err);
+    res.status(500).json({ error: 'Failed to create snapshots' });
   }
 });
 
@@ -1225,6 +1485,123 @@ app.post('/api/user/order', authMiddleware, async (req, res) => {
   }
 });
 
+// ============ NEWS API ENDPOINTS ============
+
+// Get global news from NewsAPI.org
+app.get('/api/news', async (req, res) => {
+  try {
+    const category = req.query.category as string || 'general';
+    const query = req.query.q as string;
+    const limit = Math.min(parseInt(req.query.limit as string) || 10, 20);
+
+    // Check cache first (5 minute TTL)
+    const cacheKey = `news:${category}:${query || 'all'}:${limit}`;
+    const cached = await redis.get(cacheKey);
+    if (cached) {
+      return res.json(JSON.parse(cached));
+    }
+
+    const NEWS_API_KEY = process.env.NEWS_API_KEY || '2ba0c05f-5b05-43db-9227-1e76670b9668';
+
+    // Build NewsAPI request
+    let url = 'https://newsapi.org/v2/top-headlines';
+    const params: Record<string, string> = {
+      apiKey: NEWS_API_KEY,
+      language: 'en',
+      pageSize: limit.toString(),
+    };
+
+    if (query) {
+      // Use everything endpoint for search queries
+      url = 'https://newsapi.org/v2/everything';
+      params.q = query;
+      params.sortBy = 'publishedAt';
+    } else {
+      // Use top-headlines for category browsing
+      params.country = 'us';
+      if (category !== 'general') {
+        params.category = category;
+      }
+    }
+
+    const response = await axios.get(url, { params });
+
+    if (response.data.status !== 'ok') {
+      console.error('[News] API error:', response.data);
+      return res.status(500).json({ error: 'News API error' });
+    }
+
+    const articles = response.data.articles.map((article: any) => ({
+      title: article.title,
+      description: article.description,
+      url: article.url,
+      urlToImage: article.urlToImage,
+      source: article.source?.name,
+      publishedAt: article.publishedAt,
+      author: article.author,
+    }));
+
+    // Cache for 5 minutes
+    await redis.setex(cacheKey, 300, JSON.stringify(articles));
+
+    res.json(articles);
+  } catch (err: any) {
+    console.error('[News] Error fetching news:', err.message);
+    res.status(500).json({ error: 'Failed to fetch news' });
+  }
+});
+
+// Get featured/trending markets
+app.get('/api/markets/featured', async (_req, res) => {
+  try {
+    // Check cache first (1 minute TTL)
+    const cacheKey = 'markets:featured';
+    const cached = await redis.get(cacheKey);
+    if (cached) {
+      return res.json(JSON.parse(cached));
+    }
+
+    // Get top markets by 24h volume that are still open
+    const { rows } = await db.query(`
+      SELECT
+        condition_id,
+        question,
+        slug,
+        COALESCE(last_price_yes, 0.5) as outcome_yes_price,
+        COALESCE(last_price_no, 0.5) as outcome_no_price,
+        volume,
+        liquidity,
+        yes_token_id,
+        no_token_id,
+        image_url,
+        icon_url,
+        category,
+        COALESCE(volume_24h, 0) as volume_24h,
+        COALESCE(price_change_24h, 0) as price_change_24h,
+        best_bid,
+        best_ask,
+        end_date
+      FROM markets
+      WHERE COALESCE(resolved, false) = false
+        AND question IS NOT NULL
+        AND COALESCE(volume, 0) >= 10000
+        AND COALESCE(last_price_yes, 0.5) >= 0.05
+        AND COALESCE(last_price_yes, 0.5) <= 0.95
+        AND (end_date IS NULL OR end_date > NOW())
+      ORDER BY volume_24h DESC NULLS LAST, volume DESC NULLS LAST
+      LIMIT 5
+    `);
+
+    // Cache for 1 minute
+    await redis.setex(cacheKey, 60, JSON.stringify(rows));
+
+    res.json(rows);
+  } catch (err) {
+    console.error('Error fetching featured markets:', err);
+    res.status(500).json({ error: 'Failed to fetch featured markets' });
+  }
+});
+
 // ============ PLATFORM ADMIN ENDPOINTS ============
 
 // Get platform stats
@@ -1291,9 +1668,19 @@ wss.on('connection', (ws) => {
 
 // Broadcast whale trades to all clients
 redisSub.subscribe('whale_trades');
+redisSub.subscribe('subscription_activity');
 redisSub.on('message', (channel, message) => {
   if (channel === 'whale_trades') {
     const payload = JSON.stringify({ type: 'whale_trade', data: JSON.parse(message) });
+    for (const client of clients) {
+      if (client.readyState === WebSocket.OPEN) {
+        client.send(payload);
+      }
+    }
+  } else if (channel === 'subscription_activity') {
+    // Broadcast subscription activity to all clients
+    // Clients filter by their userId on the frontend
+    const payload = JSON.stringify({ type: 'subscription_activity', data: JSON.parse(message) });
     for (const client of clients) {
       if (client.readyState === WebSocket.OPEN) {
         client.send(payload);
@@ -1303,7 +1690,7 @@ redisSub.on('message', (channel, message) => {
 });
 
 // Start services
-const poller = new TradePoller(db, redis);
+const poller = new TradePoller(db, redis, walletObserver);
 
 const PORT = parseInt(process.env.PORT || '3001');
 server.listen(PORT, async () => {
@@ -1322,7 +1709,10 @@ server.listen(PORT, async () => {
   
   // Start wallet scoring (runs every 5 minutes)
   walletScorer.startScheduled(5 * 60 * 1000);
-  
+
   // Start insider detection (runs every 10 minutes)
   insiderDetector.startScheduled(10 * 60 * 1000);
+
+  // Start daily wallet snapshots for ML training (runs once per day)
+  walletProfileService.startScheduledSnapshots(24 * 60 * 60 * 1000);
 });

@@ -24,11 +24,11 @@ function formatVolume(volume: number): string {
 }
 
 const TAG_STYLES: Record<string, { bg: string; text: string; label: string }> = {
-  whale: { bg: 'bg-neon-cyan/20', text: 'text-neon-cyan', label: '🐋' },
-  smart_money: { bg: 'bg-neon-green/20', text: 'text-neon-green', label: '🧠' },
-  insider: { bg: 'bg-neon-amber/20', text: 'text-neon-amber', label: '👁' },
-  active: { bg: 'bg-neon-magenta/20', text: 'text-neon-magenta', label: '⚡' },
-  new: { bg: 'bg-white/10', text: 'text-white', label: '✨' },
+  whale: { bg: 'bg-neon-cyan/20', text: 'text-neon-cyan', label: 'WHALE' },
+  smart_money: { bg: 'bg-neon-green/20', text: 'text-neon-green', label: 'SMART' },
+  insider: { bg: 'bg-neon-amber/20', text: 'text-neon-amber', label: 'INSIDER' },
+  active: { bg: 'bg-neon-magenta/20', text: 'text-neon-magenta', label: 'ACTIVE' },
+  new: { bg: 'bg-white/10', text: 'text-white', label: 'NEW' },
 };
 
 function WalletTag({ tag }: { tag: string }) {
@@ -76,7 +76,11 @@ function transformDbTrade(dbTrade: DbWhaleTrade): WhaleTrade {
   };
 }
 
-export function WhaleFeed() {
+interface WhaleFeedProps {
+  compact?: boolean;
+}
+
+export function WhaleFeed({ compact = false }: WhaleFeedProps) {
   const { whaleTrades, connected, addWhaleTrade } = useAppStore();
 
   // Load initial trades from API
@@ -113,25 +117,24 @@ export function WhaleFeed() {
   }, [initialTrades, whaleTrades]);
 
   return (
-    <div className="bg-terminal-surface/80 backdrop-blur border border-terminal-border rounded-lg overflow-hidden card-glow">
+    <div className="bg-terminal-surface/80 backdrop-blur border border-terminal-border rounded-lg overflow-hidden card-glow h-full flex flex-col">
       {/* Header */}
-      <div className="px-5 py-4 border-b border-terminal-border flex items-center justify-between">
+      <div className={`${compact ? 'px-4 py-2' : 'px-5 py-4'} border-b border-terminal-border flex items-center justify-between`}>
         <div className="flex items-center gap-3">
-          <span className="text-2xl">🐋</span>
-          <h2 className="font-display text-xl text-neon-cyan tracking-wide">WHALE FEED</h2>
+          <h2 className={`font-display ${compact ? 'text-sm' : 'text-xl'} text-neon-cyan tracking-wide`}>WHALE FEED</h2>
         </div>
         <div className="flex items-center gap-2">
           <span
-            className={`w-2.5 h-2.5 rounded-full ${connected ? 'bg-neon-green live-indicator' : 'bg-neon-red'}`}
+            className={`w-2 h-2 rounded-full ${connected ? 'bg-neon-green live-indicator' : 'bg-neon-red'}`}
           />
-          <span className={`text-xs font-mono uppercase tracking-widest ${connected ? 'text-neon-green' : 'text-neon-red'}`}>
+          <span className={`text-[10px] font-mono uppercase tracking-widest ${connected ? 'text-neon-green' : 'text-neon-red'}`}>
             {connected ? 'LIVE' : 'OFFLINE'}
           </span>
         </div>
       </div>
 
       {/* Trade List */}
-      <div className="max-h-[480px] overflow-y-auto">
+      <div className={`${compact ? 'max-h-64' : 'max-h-[480px]'} overflow-y-auto flex-1`}>
         {isLoading ? (
           <div className="p-8 text-center">
             <div className="text-terminal-muted text-sm animate-pulse">[ LOADING WHALE DATA ]</div>

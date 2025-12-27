@@ -13,6 +13,7 @@
     "db:migrate": "tsx src/scripts/runMigrations.ts"
   },
   "dependencies": {
+    "@huldah/shared": "workspace:*",
     "@ethersproject/wallet": "^5.7.0",
     "@polymarket/builder-relayer-client": "^0.0.8",
     "@polymarket/builder-signing-sdk": "^0.0.8",

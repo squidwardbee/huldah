@@ -6,12 +6,13 @@ import { WhaleFeed } from './components/WhaleFeed';
 import { TopWallets } from './components/TopWallets';
 import { TradingView } from './components/trading';
 import { ConnectWallet } from './components/ConnectWallet';
+import { FeaturedMarkets, GlobalNews } from './components/home';
 import { useWhaleFeed } from './hooks/useWhaleFeed';
 import { useWalletTrading } from './hooks/useWalletTrading';
 import { wagmiConfig } from './lib/wagmi';
 import { useAuthStore } from './stores/authStore';
 import { getMarketsSimple, type Market } from './lib/tradingApi';
-import { getTopWallets } from './lib/api';
+import { getTopWallets, type FeaturedMarket } from './lib/api';
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -194,10 +195,38 @@ function Dashboard() {
   const [tradingViewKey, setTradingViewKey] = useState(0);
   const { isAuthenticated } = useAuthStore();
 
-  const activeTab = location.pathname === '/trading' ? 'trading' : 'intelligence';
+  const activeTab = location.pathname === '/home' || location.pathname === '/' ? 'home' : 'trading';
 
   // Handle market selection from search
   const handleSelectMarket = (market: Market) => {
+    setSelectedMarketFromSearch(market);
+    navigate('/trading');
+  };
+
+  // Handle market selection from featured markets
+  const handleSelectFeaturedMarket = (featured: FeaturedMarket) => {
+    // Convert FeaturedMarket to Market format
+    const market: Market = {
+      condition_id: featured.condition_id,
+      question: featured.question,
+      slug: featured.slug,
+      outcome_yes_price: featured.outcome_yes_price,
+      outcome_no_price: featured.outcome_no_price,
+      volume: featured.volume,
+      liquidity: featured.liquidity,
+      resolved: false,
+      resolution_outcome: null,
+      end_date: featured.end_date,
+      yes_token_id: featured.yes_token_id,
+      no_token_id: featured.no_token_id,
+      image_url: featured.image_url,
+      icon_url: featured.icon_url,
+      category: featured.category,
+      volume_24h: featured.volume_24h,
+      price_change_24h: featured.price_change_24h,
+      best_bid: featured.best_bid,
+      best_ask: featured.best_ask,
+    };
     setSelectedMarketFromSearch(market);
     navigate('/trading');
   };
@@ -216,40 +245,44 @@ function Dashboard() {
   // Handle wallet selection from search (copy to clipboard)
   const handleSelectWallet = (address: string) => {
     navigator.clipboard.writeText(address);
-    // Could also navigate to wallet detail view in future
   };
 
   return (
     <div className="h-full flex flex-col">
-      {/* Compact Header */}
-      <header className="bg-terminal-bg/95 backdrop-blur border-b border-terminal-border px-4 py-2 animate-fade-in">
-        <div className="flex items-center justify-between gap-4">
-          {/* Left: Logo + Tabs */}
-          <div className="flex items-center gap-6">
-            {/* Logo */}
-            <div className="flex items-center gap-2">
-              <div className="w-2 h-2 bg-neon-cyan rounded-full animate-pulse" />
-              <h1 className="font-display text-lg text-white tracking-tight">
-                HULDAH<span className="text-neon-cyan">.AI</span>
-              </h1>
-            </div>
+      {/* Compact Header with logo offset */}
+      <header className="bg-terminal-bg/95 backdrop-blur border-b border-terminal-border py-2 animate-fade-in">
+        <div className="flex items-center justify-between gap-4 px-4">
+          {/* Left spacer + Logo + Tabs */}
+          <div className="flex items-center">
+            {/* Left spacer to push logo ~20% from left */}
+            <div className="w-[calc(20vw-120px)] min-w-0 max-w-32" />
 
-            {/* Navigation Tabs */}
-            <nav className="flex gap-1">
-              <TabButton
-                active={activeTab === 'intelligence'}
-                onClick={() => navigate('/intelligence')}
-              >
-                INTELLIGENCE
-              </TabButton>
-              <TabButton
-                active={activeTab === 'trading'}
-                onClick={handleTradingClick}
-                badge={isAuthenticated ? undefined : 'SIGN IN'}
-              >
-                TRADING
-              </TabButton>
-            </nav>
+            <div className="flex items-center gap-6">
+              {/* Logo */}
+              <div className="flex items-center gap-2">
+                <div className="w-2 h-2 bg-neon-cyan rounded-full animate-pulse" />
+                <h1 className="font-display text-lg text-white tracking-tight">
+                  HULDAH<span className="text-neon-cyan">.AI</span>
+                </h1>
+              </div>
+
+              {/* Navigation Tabs */}
+              <nav className="flex gap-1">
+                <TabButton
+                  active={activeTab === 'home'}
+                  onClick={() => navigate('/home')}
+                >
+                  HOME
+                </TabButton>
+                <TabButton
+                  active={activeTab === 'trading'}
+                  onClick={handleTradingClick}
+                  badge={isAuthenticated ? undefined : 'SIGN IN'}
+                >
+                  TRADING
+                </TabButton>
+              </nav>
+            </div>
           </div>
 
           {/* Right: Balance + Search + Wallet */}
@@ -267,9 +300,9 @@ function Dashboard() {
       {/* Content - Full height */}
       <main className="flex-1 animate-fade-in overflow-hidden" style={{ animationDelay: '100ms' }}>
         <Routes>
-          <Route path="/intelligence" element={
-            <div className="h-full p-4">
-              <IntelligenceView />
+          <Route path="/home" element={
+            <div className="h-full p-4 overflow-y-auto">
+              <HomeView onSelectMarket={handleSelectFeaturedMarket} />
             </div>
           } />
           <Route path="/trading" element={
@@ -279,9 +312,14 @@ function Dashboard() {
               onMarketCleared={() => setSelectedMarketFromSearch(null)}
             />
           } />
+          <Route path="/" element={
+            <div className="h-full p-4 overflow-y-auto">
+              <HomeView onSelectMarket={handleSelectFeaturedMarket} />
+            </div>
+          } />
           <Route path="*" element={
-            <div className="h-full p-4">
-              <IntelligenceView />
+            <div className="h-full p-4 overflow-y-auto">
+              <HomeView onSelectMarket={handleSelectFeaturedMarket} />
             </div>
           } />
         </Routes>
@@ -290,23 +328,29 @@ function Dashboard() {
   );
 }
 
-function IntelligenceView() {
+interface HomeViewProps {
+  onSelectMarket: (market: FeaturedMarket) => void;
+}
+
+function HomeView({ onSelectMarket }: HomeViewProps) {
   return (
-    <>
-      {/* Stats Bar */}
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-8">
-        <StatCard label="TRACKING" value="ACTIVE" accent="cyan" />
-        <StatCard label="THRESHOLD" value="$1,000" accent="magenta" />
-        <StatCard label="DATA SOURCE" value="POLYMARKET" accent="amber" />
-        <StatCard label="LATENCY" value="~2s" accent="green" />
+    <div className="max-w-7xl mx-auto space-y-6">
+      {/* Primary row: Featured Markets + Global News */}
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+        <FeaturedMarkets onSelectMarket={onSelectMarket} />
+        <GlobalNews />
       </div>
 
-      {/* Main Grid */}
+      {/* Secondary row: Whale Feed + Top Wallets (smaller) */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-        <WhaleFeed />
-        <TopWallets />
+        <div className="max-h-80 overflow-hidden">
+          <WhaleFeed compact />
+        </div>
+        <div className="max-h-80 overflow-hidden">
+          <TopWallets compact />
+        </div>
       </div>
-    </>
+    </div>
   );
 }
 
@@ -339,30 +383,6 @@ function TabButton({
         </span>
       )}
     </button>
-  );
-}
-
-function StatCard({ 
-  label, 
-  value, 
-  accent 
-}: { 
-  label: string; 
-  value: string; 
-  accent: 'cyan' | 'magenta' | 'amber' | 'green';
-}) {
-  const accentColors = {
-    cyan: 'border-neon-cyan/30 text-neon-cyan',
-    magenta: 'border-neon-magenta/30 text-neon-magenta',
-    amber: 'border-neon-amber/30 text-neon-amber',
-    green: 'border-neon-green/30 text-neon-green',
-  };
-
-  return (
-    <div className={`bg-terminal-surface/60 border ${accentColors[accent].split(' ')[0]} rounded-lg px-4 py-3`}>
-      <div className="text-terminal-muted text-xs tracking-widest uppercase mb-1">{label}</div>
-      <div className={`font-mono font-semibold ${accentColors[accent].split(' ')[1]}`}>{value}</div>
-    </div>
   );
 }
 

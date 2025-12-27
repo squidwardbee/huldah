@@ -16,16 +16,20 @@ function formatAddress(address: string): string {
   return `${address.slice(0, 8)}···${address.slice(-4)}`;
 }
 
-const TAG_EMOJI: Record<string, string> = {
-  whale: '🐋',
-  smart_money: '🧠',
-  insider: '👁',
-  active: '⚡',
-  new: '✨',
-  top_trader: '💰',
+const TAG_LABELS: Record<string, string> = {
+  whale: 'W',
+  smart_money: 'S',
+  insider: 'I',
+  active: 'A',
+  new: 'N',
+  top_trader: 'T',
 };
 
-export function TopWallets() {
+interface TopWalletsProps {
+  compact?: boolean;
+}
+
+export function TopWallets({ compact = false }: TopWalletsProps) {
   const { data: wallets, isLoading, error } = useQuery<Wallet[]>({
     queryKey: ['topWallets'],
     queryFn: getTopWallets,
@@ -33,15 +37,14 @@ export function TopWallets() {
   });
 
   return (
-    <div className="bg-terminal-surface/80 backdrop-blur border border-terminal-border rounded-lg overflow-hidden card-glow">
+    <div className="bg-terminal-surface/80 backdrop-blur border border-terminal-border rounded-lg overflow-hidden card-glow h-full flex flex-col">
       {/* Header */}
-      <div className="px-5 py-4 border-b border-terminal-border flex items-center gap-3">
-        <span className="text-2xl">📊</span>
-        <h2 className="font-display text-xl text-neon-magenta tracking-wide">TOP WALLETS</h2>
+      <div className={`${compact ? 'px-4 py-2' : 'px-5 py-4'} border-b border-terminal-border flex items-center gap-3`}>
+        <h2 className={`font-display ${compact ? 'text-sm' : 'text-xl'} text-neon-magenta tracking-wide`}>TOP WALLETS</h2>
       </div>
-      
+
       {/* Content */}
-      <div className="max-h-[480px] overflow-y-auto">
+      <div className={`${compact ? 'max-h-64' : 'max-h-[480px]'} overflow-y-auto flex-1`}>
         {isLoading ? (
           <div className="p-8 text-center">
             <div className="text-terminal-muted text-sm animate-pulse">[ LOADING DATA ]</div>
@@ -95,12 +98,12 @@ export function TopWallets() {
                     <div className="flex items-center justify-center gap-1">
                       {wallet.tags && wallet.tags.length > 0 ? (
                         wallet.tags.slice(0, 3).map(tag => (
-                          <span key={tag} title={tag} className="text-sm">
-                            {TAG_EMOJI[tag] || '•'}
+                          <span key={tag} title={tag} className="text-[10px] font-mono px-1 py-0.5 bg-terminal-border/50 rounded text-terminal-muted">
+                            {TAG_LABELS[tag] || tag.charAt(0).toUpperCase()}
                           </span>
                         ))
                       ) : (
-                        <span className="text-terminal-muted/40">—</span>
+                        <span className="text-terminal-muted/40">-</span>
                       )}
                     </div>
                   </td>
