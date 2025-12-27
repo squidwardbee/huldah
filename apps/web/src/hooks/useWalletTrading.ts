@@ -213,6 +213,8 @@ export function useWalletTrading() {
         try {
           await switchChainAsync({ chainId: CHAIN_ID });
           console.log('[useWalletTrading] Successfully switched to Polygon');
+          // Give the provider time to update its internal state after chain switch
+          await new Promise(resolve => setTimeout(resolve, 500));
         } catch (switchErr: any) {
           console.error('[useWalletTrading] Chain switch failed:', switchErr);
           if (switchErr.message?.includes('rejected') || switchErr.message?.includes('denied')) {
@@ -230,6 +232,15 @@ export function useWalletTrading() {
       }
 
       const web3Provider = new ethers.providers.Web3Provider(provider as any);
+
+      // Verify we're actually on Polygon - the provider must report the correct chain
+      const network = await web3Provider.getNetwork();
+      if (network.chainId !== CHAIN_ID) {
+        console.error('[useWalletTrading] Provider still on wrong chain after switch:', network.chainId);
+        throw new Error(`Wallet is on chain ${network.chainId}, please switch to Polygon (137) and try again`);
+      }
+      console.log('[useWalletTrading] Verified provider on Polygon, chainId:', network.chainId);
+
       const signer = web3Provider.getSigner();
 
       // Check for cached credentials
