@@ -12,9 +12,7 @@
  */
 
 import { useState, useCallback, useEffect, useRef, useMemo } from 'react';
-import { useAccount, useChainId } from 'wagmi';
-import { switchChain, getChainId } from '@wagmi/core';
-import { wagmiConfig } from '../lib/wagmi';
+import { useAccount, useChainId, useSwitchChain } from 'wagmi';
 import { ethers } from 'ethers';
 import { ClobClient, Side, OrderType as ClobOrderType, AssetType } from '@polymarket/clob-client';
 import { getCreate2Address, keccak256, encodeAbiParameters, type Hex } from 'viem';
@@ -100,6 +98,7 @@ const SIGNATURE_TYPE = {
 export function useWalletTrading() {
   const { address, isConnected, connector } = useAccount();
   const chainId = useChainId();
+  const { switchChainAsync } = useSwitchChain();
 
   const [isLoading, setIsLoading] = useState(false);
   const [isInitializing, setIsInitializing] = useState(false);
@@ -208,26 +207,18 @@ export function useWalletTrading() {
     setError(null);
 
     try {
-      // Ensure on Polygon
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const currentChain = getChainId(wagmiConfig as any);
-      if (currentChain !== CHAIN_ID) {
-        console.log('[useWalletTrading] Switching to Polygon...');
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        await switchChain(wagmiConfig as any, { chainId: CHAIN_ID });
-
-        // Wait for chain switch
-        let attempts = 0;
-        while (attempts < 10) {
-          await new Promise(resolve => setTimeout(resolve, 500));
-          // eslint-disable-next-line @typescript-eslint/no-explicit-any
-          if (getChainId(wagmiConfig as any) === CHAIN_ID) break;
-          attempts++;
-        }
-
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        if (getChainId(wagmiConfig as any) !== CHAIN_ID) {
-          throw new Error('Please switch to Polygon network');
+      // Ensure on Polygon - use the wagmi hook's switchChainAsync
+      if (chainId !== CHAIN_ID) {
+        console.log('[useWalletTrading] Switching to Polygon...', { currentChainId: chainId, targetChainId: CHAIN_ID });
+        try {
+          await switchChainAsync({ chainId: CHAIN_ID });
+          console.log('[useWalletTrading] Successfully switched to Polygon');
+        } catch (switchErr: any) {
+          console.error('[useWalletTrading] Chain switch failed:', switchErr);
+          if (switchErr.message?.includes('rejected') || switchErr.message?.includes('denied')) {
+            throw new Error('Please approve the network switch to Polygon');
+          }
+          throw new Error('Please switch to Polygon network in your wallet');
         }
       }
 
@@ -368,7 +359,7 @@ export function useWalletTrading() {
     } finally {
       setIsInitializing(false);
     }
-  }, [connector, address, isReady, geoblock, proxyWallet]);
+  }, [connector, address, isReady, geoblock, proxyWallet, chainId, switchChainAsync]);
 
   // Auto-initialize when wallet connects on Polygon
   useEffect(() => {

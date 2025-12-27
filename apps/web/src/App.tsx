@@ -7,6 +7,7 @@ import { TopWallets } from './components/TopWallets';
 import { TradingView } from './components/trading';
 import { ConnectWallet } from './components/ConnectWallet';
 import { FeaturedMarkets, GlobalNews } from './components/home';
+import { WalletsPage } from './pages/WalletsPage';
 import { useWhaleFeed } from './hooks/useWhaleFeed';
 import { useWalletTrading } from './hooks/useWalletTrading';
 import { wagmiConfig } from './lib/wagmi';
@@ -195,7 +196,9 @@ function Dashboard() {
   const [tradingViewKey, setTradingViewKey] = useState(0);
   const { isAuthenticated } = useAuthStore();
 
-  const activeTab = location.pathname === '/home' || location.pathname === '/' ? 'home' : 'trading';
+  const activeTab = location.pathname === '/wallets' ? 'wallets'
+    : location.pathname === '/trading' ? 'trading'
+    : 'home';
 
   // Handle market selection from search
   const handleSelectMarket = (market: Market) => {
@@ -281,6 +284,12 @@ function Dashboard() {
                 >
                   TRADING
                 </TabButton>
+                <TabButton
+                  active={activeTab === 'wallets'}
+                  onClick={() => navigate('/wallets')}
+                >
+                  WALLETS
+                </TabButton>
               </nav>
             </div>
           </div>
@@ -312,6 +321,7 @@ function Dashboard() {
               onMarketCleared={() => setSelectedMarketFromSearch(null)}
             />
           } />
+          <Route path="/wallets" element={<WalletsPage />} />
           <Route path="/" element={
             <div className="h-full p-4 overflow-y-auto">
               <HomeView onSelectMarket={handleSelectFeaturedMarket} />

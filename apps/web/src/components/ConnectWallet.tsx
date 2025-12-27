@@ -31,24 +31,45 @@ export function ConnectWallet() {
     }
   }, [isAuthenticated]);
 
-  // Switch to Polygon when connected on wrong chain
+  // Track if we've already attempted a chain switch for this session
+  const hasSwitchedRef = useRef(false);
+
+  // Reset switch tracking when disconnected
   useEffect(() => {
-    if (isConnected && !isOnPolygon && !isSwitching) {
-      console.log('[ConnectWallet] Wrong chain detected, switching to Polygon...', { chainId, targetChain: polygon.id });
-      switchChain({ chainId: polygon.id }, {
-        onError: (err) => {
-          console.error('[ConnectWallet] Chain switch failed:', err);
-          if (err.message?.includes('rejected') || err.message?.includes('denied')) {
-            setError('Please switch to Polygon network to use this app');
-          } else {
-            setError('Please switch to Polygon network in your wallet');
-          }
-        },
-        onSuccess: () => {
-          console.log('[ConnectWallet] Successfully switched to Polygon');
-          setError(null);
+    if (!isConnected) {
+      hasSwitchedRef.current = false;
+    }
+  }, [isConnected]);
+
+  // Switch to Polygon when connected on wrong chain
+  // Uses a small delay to handle reconnection timing issues
+  useEffect(() => {
+    if (isConnected && !isOnPolygon && !isSwitching && !hasSwitchedRef.current) {
+      // Small delay to let the connector fully initialize after reconnection
+      // This fixes timing issues where switchChain fails during reconnect
+      const timeoutId = setTimeout(() => {
+        if (!isOnPolygon && !isSwitching) {
+          console.log('[ConnectWallet] Wrong chain detected, switching to Polygon...', { chainId, targetChain: polygon.id });
+          hasSwitchedRef.current = true;
+          switchChain({ chainId: polygon.id }, {
+            onError: (err) => {
+              console.error('[ConnectWallet] Chain switch failed:', err);
+              hasSwitchedRef.current = false; // Allow retry on error
+              if (err.message?.includes('rejected') || err.message?.includes('denied')) {
+                setError('Please switch to Polygon network to use this app');
+              } else {
+                setError('Please switch to Polygon network in your wallet');
+              }
+            },
+            onSuccess: () => {
+              console.log('[ConnectWallet] Successfully switched to Polygon');
+              setError(null);
+            }
+          });
         }
-      });
+      }, 100);
+
+      return () => clearTimeout(timeoutId);
     }
   }, [isConnected, isOnPolygon, isSwitching, chainId, switchChain]);
 
@@ -211,7 +232,10 @@ export function ConnectWallet() {
                         setError(null);
                         // Set flag to auto-authenticate after connection completes
                         pendingAuthRef.current = true;
-                        connect({ connector });
+                        // Pass chainId to connect directly to Polygon
+                        // Note: Not all connectors support this, so we also have
+                        // a useEffect fallback that calls switchChain if needed
+                        connect({ connector, chainId: polygon.id });
                       }}
                       disabled={isConnecting || isAuthenticating || isSwitching}
                       className={`
