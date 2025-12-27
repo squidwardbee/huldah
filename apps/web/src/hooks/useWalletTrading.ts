@@ -412,9 +412,10 @@ export function useWalletTrading() {
 
       const client = clobClientRef.current!;
 
-      // Validate price range (Polymarket: 0.01 - 0.99)
-      if (params.price < 0.01 || params.price > 0.99) {
-        return { success: false, errorMessage: 'Price must be between 1¢ and 99¢' };
+      // Validate price range (Polymarket: 0.001 - 0.999)
+      // High-confidence markets can have prices very close to 0 or 1
+      if (params.price < 0.001 || params.price > 0.999) {
+        return { success: false, errorMessage: 'Price must be between 0.1¢ and 99.9¢' };
       }
 
       if (params.size <= 0) {
@@ -424,20 +425,29 @@ export function useWalletTrading() {
       const side = params.side === 'BUY' ? Side.BUY : Side.SELL;
       const orderType = mapOrderType(params.orderType || 'GTC');
 
+      // Round price to 2 decimals to ensure makerAmount (USDC) has max 2 decimals
+      // Polymarket CLOB requires: makerAmount max 2 decimals, takerAmount max 5 decimals
+      const roundedPrice = Math.round(params.price * 100) / 100;
+
+      // Also round size to avoid floating point issues
+      const roundedSize = Math.round(params.size * 100000) / 100000;
+
       console.log('[useWalletTrading] Creating order:', {
         tokenId: params.tokenId,
         side: params.side,
-        price: params.price,
-        size: params.size,
+        price: roundedPrice,
+        size: roundedSize,
         orderType: params.orderType,
+        originalPrice: params.price,
+        originalSize: params.size,
       });
 
       // Create order (signs with wallet)
       const order = await client.createOrder({
         tokenID: params.tokenId,
-        price: params.price,
+        price: roundedPrice,
         side,
-        size: params.size,
+        size: roundedSize,
       });
 
       console.log('[useWalletTrading] Order created, submitting to CLOB...');

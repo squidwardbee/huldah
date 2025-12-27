@@ -76,14 +76,15 @@ export function OrderForm({
   const effectivePrice = orderMode === 'MARKET' ? marketPrice : (parseFloat(price) || 0);
   const priceNum = effectivePrice;
 
-  // Validate price is in valid range (0.01 - 0.99)
-  const isPriceValid = priceNum >= 0.01 && priceNum <= 0.99;
+  // Validate price is in valid range (0.001 - 0.999)
+  // Polymarket allows prices very close to 0 and 1 for high-confidence markets
+  const isPriceValid = priceNum >= 0.001 && priceNum <= 0.999;
 
   // For market orders, check if we have orderbook data
   const hasOrderbookData = bestBid !== undefined || bestAsk !== undefined;
   const canPlaceMarketOrder = orderMode !== 'MARKET' || (
-    (side === 'BUY' && bestAsk !== undefined && bestAsk >= 0.01 && bestAsk <= 0.99) ||
-    (side === 'SELL' && bestBid !== undefined && bestBid >= 0.01 && bestBid <= 0.99)
+    (side === 'BUY' && bestAsk !== undefined && bestAsk >= 0.001 && bestAsk <= 0.999) ||
+    (side === 'SELL' && bestBid !== undefined && bestBid >= 0.001 && bestBid <= 0.999)
   );
 
   // Determine why market order can't be placed
@@ -180,6 +181,20 @@ export function OrderForm({
   };
 
   const isProcessing = isSubmitting || isTradeLoading;
+
+  // Debug: log why button might be disabled
+  console.log('[OrderForm] Button state:', {
+    isProcessing,
+    isPriceValid,
+    canPlaceMarketOrder,
+    sizeNum,
+    orderMode,
+    priceNum,
+    bestBid,
+    bestAsk,
+    side,
+    disabled: isProcessing || !isPriceValid || !canPlaceMarketOrder || sizeNum <= 0,
+  });
 
   // Format balance for compact display
   const formattedBalance = walletTrading.balance
