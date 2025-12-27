@@ -11,6 +11,7 @@
 export interface WalletProfile {
   // Identity
   address: string;
+  polymarketUsername?: string;
   entityId?: string;
   clusterId?: string;
   firstSeen: Date;

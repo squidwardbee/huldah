@@ -399,6 +399,33 @@ app.delete('/api/intelligence/wallets/:address/subscribe', authMiddleware, async
   }
 });
 
+// Update subscription settings (nickname, notes, notifications) (auth required)
+app.patch('/api/intelligence/wallets/:address/subscribe', authMiddleware, async (req, res) => {
+  try {
+    const { address } = req.params;
+    const { nickname, notes, notifyOnTrade, notifyOnWhaleTrade, notifyOnNewPosition, notifyOnPositionClosed } = req.body;
+
+    const subscription = await walletProfileService.updateSubscription(req.user!.id, address, {
+      nickname,
+      notes,
+      notifyOnTrade,
+      notifyOnWhaleTrade,
+      notifyOnNewPosition,
+      notifyOnPositionClosed,
+    });
+
+    if (!subscription) {
+      res.status(404).json({ error: 'Subscription not found' });
+      return;
+    }
+
+    res.json(subscription);
+  } catch (err) {
+    console.error('Error updating subscription:', err);
+    res.status(500).json({ error: 'Failed to update subscription' });
+  }
+});
+
 // Get user's subscriptions (auth required)
 app.get('/api/user/subscriptions', authMiddleware, async (req, res) => {
   try {

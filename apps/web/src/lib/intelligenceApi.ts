@@ -4,6 +4,7 @@ import { useAuthStore } from '../stores/authStore';
 // Types
 export interface WalletProfile {
   address: string;
+  polymarketUsername?: string;
   entityId?: string;
   clusterId?: string;
   firstSeen: string;
@@ -250,6 +251,25 @@ export async function subscribeToWallet(
 export async function unsubscribeFromWallet(address: string): Promise<{ success: boolean }> {
   const { data } = await api.delete(
     `/api/intelligence/wallets/${address}/subscribe`,
+    { headers: getAuthHeaders() }
+  );
+  return data;
+}
+
+export async function updateSubscription(
+  address: string,
+  options: {
+    nickname?: string;
+    notes?: string;
+    notifyOnTrade?: boolean;
+    notifyOnWhaleTrade?: boolean;
+    notifyOnNewPosition?: boolean;
+    notifyOnPositionClosed?: boolean;
+  }
+): Promise<WalletSubscription> {
+  const { data } = await api.patch(
+    `/api/intelligence/wallets/${address}/subscribe`,
+    options,
     { headers: getAuthHeaders() }
   );
   return data;

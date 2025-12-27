@@ -228,6 +228,43 @@ export async function getMarketHolders(conditionId: string, limit = 50) {
   }[];
 }
 
+// Market trades from Polymarket Data API
+export interface MarketTrade {
+  txHash: string;
+  wallet: string;
+  side: 'BUY' | 'SELL';
+  price: number;
+  size: number;
+  timestamp: number;
+  outcome?: string;
+}
+
+export async function getMarketTrades(tokenId: string, limit = 50): Promise<MarketTrade[]> {
+  try {
+    // Polymarket Data API endpoint for trades
+    const response = await fetch(
+      `https://data-api.polymarket.com/trades?asset=${tokenId}&limit=${limit}`
+    );
+    if (!response.ok) {
+      console.warn(`Trades fetch failed: ${response.status}`);
+      return [];
+    }
+    const data = await response.json();
+    return data.map((trade: any) => ({
+      txHash: trade.transactionHash,
+      wallet: trade.proxyWallet,
+      side: trade.side,
+      price: trade.price,
+      size: trade.size,
+      timestamp: trade.timestamp,
+      outcome: trade.outcome,
+    }));
+  } catch (err) {
+    console.error('Error fetching market trades:', err);
+    return [];
+  }
+}
+
 // Polymarket CLOB price history endpoint
 export interface PriceHistoryPoint {
   t: number; // Unix timestamp

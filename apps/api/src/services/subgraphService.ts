@@ -26,6 +26,7 @@ interface Wallet24hData {
   address: string;
   pnl24h: number;
   volume24h: number;
+  userName: string | null;
 }
 
 export class SubgraphService {
@@ -92,14 +93,15 @@ export class SubgraphService {
     let seeded = 0;
     for (const wallet of wallets) {
       try {
-        // Update realized PnL and volume from Polymarket data API
+        // Update realized PnL, volume, and username from Polymarket data API
         await this.db.query(`
-          INSERT INTO wallets (address, realized_pnl, total_trades, total_volume, first_seen, tags)
-          VALUES ($1, $2, 0, $3, NOW(), $4)
+          INSERT INTO wallets (address, realized_pnl, total_trades, total_volume, polymarket_username, first_seen, tags)
+          VALUES ($1, $2, 0, $3, $5, NOW(), $4)
           ON CONFLICT (address) DO UPDATE SET
             realized_pnl = $2,
             total_volume = GREATEST(COALESCE(wallets.total_volume, 0), $3),
-            tags = CASE 
+            polymarket_username = COALESCE($5, wallets.polymarket_username),
+            tags = CASE
               WHEN $2 > 1000000 THEN array_append(array_remove(COALESCE(wallets.tags, '{}'), 'top_trader'), 'top_trader')
               ELSE COALESCE(wallets.tags, '{}')
             END
@@ -107,7 +109,8 @@ export class SubgraphService {
           wallet.address,
           wallet.realizedPnl,
           wallet.volume,
-          wallet.realizedPnl > 1000000 ? ['top_trader'] : []
+          wallet.realizedPnl > 1000000 ? ['top_trader'] : [],
+          wallet.userName || null
         ]);
         seeded++;
       } catch (err) {
@@ -177,15 +180,20 @@ export class SubgraphService {
       const allTimeData = { data: [...allTimeData1.data, ...allTimeData2.data] };
 
       // Build a map of all-time data by address (lowercase for consistent lookup)
-      const allTimeMap = new Map<string, { pnl: number; vol: number }>();
+      const allTimeMap = new Map<string, { pnl: number; vol: number; userName: string | null }>();
       for (const entry of allTimeData.data) {
-        allTimeMap.set(entry.proxyWallet.toLowerCase(), { pnl: entry.pnl, vol: entry.vol });
+        allTimeMap.set(entry.proxyWallet.toLowerCase(), {
+          pnl: entry.pnl,
+          vol: entry.vol,
+          userName: entry.userName || null
+        });
       }
 
       const wallets: Wallet24hData[] = dayData.data.map(entry => ({
         address: entry.proxyWallet.toLowerCase(),
         pnl24h: entry.pnl,
         volume24h: entry.vol,
+        userName: entry.userName || null,
       }));
 
       console.log(`[Polymarket] Found ${wallets.length} wallets with 24h data`);
@@ -206,7 +214,11 @@ export class SubgraphService {
               params: { timePeriod: 'ALL', user: wallet.address, limit: 1, category: 'OVERALL' }
             });
             if (data.length > 0) {
-              allTimeMap.set(wallet.address.toLowerCase(), { pnl: data[0].pnl, vol: data[0].vol });
+              allTimeMap.set(wallet.address.toLowerCase(), {
+                pnl: data[0].pnl,
+                vol: data[0].vol,
+                userName: data[0].userName || null
+              });
               console.log(`[Polymarket]   ${wallet.address.slice(0, 10)}... all-time PnL: $${data[0].pnl.toLocaleString()}`);
             }
           } catch (err) {
@@ -220,21 +232,25 @@ export class SubgraphService {
       for (const wallet of wallets) {
         try {
           const allTime = allTimeMap.get(wallet.address);
+          // Use userName from 24h data, fallback to all-time data
+          const userName = wallet.userName || allTime?.userName || null;
           await this.db.query(`
-            INSERT INTO wallets (address, pnl_24h, volume_24h, realized_pnl, total_volume, first_seen, last_active)
-            VALUES ($1, $2::decimal, $3::decimal, COALESCE($4::decimal, 0), COALESCE($5::decimal, 0), NOW(), NOW())
+            INSERT INTO wallets (address, pnl_24h, volume_24h, realized_pnl, total_volume, polymarket_username, first_seen, last_active)
+            VALUES ($1, $2::decimal, $3::decimal, COALESCE($4::decimal, 0), COALESCE($5::decimal, 0), $6, NOW(), NOW())
             ON CONFLICT (address) DO UPDATE SET
               pnl_24h = $2::decimal,
               volume_24h = $3::decimal,
               realized_pnl = COALESCE($4::decimal, wallets.realized_pnl),
               total_volume = GREATEST(wallets.total_volume, COALESCE($5::decimal, 0)),
+              polymarket_username = COALESCE($6, wallets.polymarket_username),
               last_active = NOW()
           `, [
             wallet.address,
             wallet.pnl24h,
             wallet.volume24h,
             allTime?.pnl ?? null,
-            allTime?.vol ?? null
+            allTime?.vol ?? null,
+            userName
           ]);
           updated++;
         } catch (err) {
@@ -248,9 +264,10 @@ export class SubgraphService {
           await this.db.query(`
             UPDATE wallets
             SET realized_pnl = $2,
-                total_volume = GREATEST(total_volume, $3)
+                total_volume = GREATEST(total_volume, $3),
+                polymarket_username = COALESCE($4, polymarket_username)
             WHERE address = $1
-          `, [entry.proxyWallet.toLowerCase(), entry.pnl, entry.vol]);
+          `, [entry.proxyWallet.toLowerCase(), entry.pnl, entry.vol, entry.userName || null]);
         } catch (err) {
           // Wallet might not exist
         }

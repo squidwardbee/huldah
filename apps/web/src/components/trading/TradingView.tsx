@@ -2,6 +2,7 @@ import { useState, useCallback, useEffect } from 'react';
 import { Panel, PanelGroup, PanelResizeHandle } from 'react-resizable-panels';
 import { MarketGrid } from './MarketGrid';
 import { Orderbook } from './Orderbook';
+import { Trades } from './Trades';
 import { OrderForm } from './OrderForm';
 import { Positions } from './Positions';
 import { PriceChart } from './PriceChart';
@@ -11,6 +12,7 @@ import { getCredentialsStatus, type Market } from '../../lib/tradingApi';
 
 type BottomTab = 'positions' | 'orders' | 'fills';
 type OutcomeView = 'YES' | 'NO';
+type RightPanelView = 'book' | 'trades';
 
 // Custom resize handle component - larger hit area, subtle line on hover
 function ResizeHandle({ direction = 'horizontal' }: { direction?: 'horizontal' | 'vertical' }) {
@@ -78,6 +80,7 @@ export function TradingView({ initialMarket, onMarketCleared }: TradingViewProps
   // Collapsed states for right panels
   const [orderbookCollapsed, setOrderbookCollapsed] = useState(false);
   const [orderFormCollapsed, setOrderFormCollapsed] = useState(false);
+  const [rightPanelView, setRightPanelView] = useState<RightPanelView>('book');
 
   // Format balance for display
   const formattedBalance = balance ? `$${(parseFloat(balance) / 1e6).toFixed(2)}` : '-';
@@ -309,7 +312,7 @@ export function TradingView({ initialMarket, onMarketCleared }: TradingViewProps
             autoSaveId="trading-terminal-right-v2"
             className="h-full"
           >
-            {/* Orderbook Panel */}
+            {/* Orderbook/Trades Panel */}
             <Panel
               defaultSize={orderbookCollapsed ? 5 : 50}
               minSize={orderbookCollapsed ? 5 : 20}
@@ -320,19 +323,60 @@ export function TradingView({ initialMarket, onMarketCleared }: TradingViewProps
               onExpand={() => setOrderbookCollapsed(false)}
             >
               <div className="h-full flex flex-col border-r border-terminal-border overflow-hidden relative">
-                <PanelHeader
-                  title=""
-                  collapsed={orderbookCollapsed}
-                  onToggle={() => setOrderbookCollapsed(!orderbookCollapsed)}
-                />
-                {/* Always render Orderbook - use absolute positioning when collapsed to keep fetching */}
+                {/* Panel header with Book/Trades toggle */}
+                <div className="flex items-center justify-between px-2 py-1 border-b border-terminal-border bg-terminal-surface/50 shrink-0">
+                  {!orderbookCollapsed && (
+                    <div className="flex border border-terminal-border rounded overflow-hidden">
+                      <button
+                        onClick={() => setRightPanelView('book')}
+                        className={`px-1.5 py-0.5 text-[8px] font-mono font-bold transition-all ${
+                          rightPanelView === 'book' ? 'bg-neon-cyan/20 text-neon-cyan' : 'text-terminal-muted hover:text-white'
+                        }`}
+                      >
+                        BOOK
+                      </button>
+                      <button
+                        onClick={() => setRightPanelView('trades')}
+                        className={`px-1.5 py-0.5 text-[8px] font-mono font-bold transition-all ${
+                          rightPanelView === 'trades' ? 'bg-neon-cyan/20 text-neon-cyan' : 'text-terminal-muted hover:text-white'
+                        }`}
+                      >
+                        TRADES
+                      </button>
+                    </div>
+                  )}
+                  <button
+                    onClick={() => setOrderbookCollapsed(!orderbookCollapsed)}
+                    className="text-terminal-muted hover:text-white transition-colors p-0.5 ml-auto"
+                    title={orderbookCollapsed ? 'Expand' : 'Collapse'}
+                  >
+                    <svg
+                      className={`w-3 h-3 transition-transform ${orderbookCollapsed ? 'rotate-90' : '-rotate-90'}`}
+                      fill="none"
+                      stroke="currentColor"
+                      viewBox="0 0 24 24"
+                    >
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" />
+                    </svg>
+                  </button>
+                </div>
+                {/* Content area - always render Orderbook hidden to maintain price updates */}
                 <div className={orderbookCollapsed ? 'absolute opacity-0 pointer-events-none' : 'flex-1 overflow-hidden'}>
-                  <Orderbook
-                    tokenId={activeTokenId}
-                    onPriceClick={handlePriceClick}
-                    onBestPricesChange={handleBestPricesChange}
-                    compact
-                  />
+                  {/* Orderbook - hidden when trades view active but still fetching */}
+                  <div className={rightPanelView === 'book' ? 'h-full' : 'absolute opacity-0 pointer-events-none'}>
+                    <Orderbook
+                      tokenId={activeTokenId}
+                      onPriceClick={handlePriceClick}
+                      onBestPricesChange={handleBestPricesChange}
+                      compact
+                    />
+                  </div>
+                  {/* Trades - only visible when selected */}
+                  {rightPanelView === 'trades' && (
+                    <div className="h-full">
+                      <Trades tokenId={activeTokenId} compact />
+                    </div>
+                  )}
                 </div>
                 {orderbookCollapsed && (
                   <div className="flex-1 flex items-center justify-center">
@@ -340,7 +384,7 @@ export function TradingView({ initialMarket, onMarketCleared }: TradingViewProps
                       className="text-terminal-muted text-[9px] font-mono"
                       style={{ writingMode: 'vertical-rl', transform: 'rotate(180deg)' }}
                     >
-                      ORDERBOOK
+                      {rightPanelView === 'book' ? 'BOOK' : 'TRADES'}
                     </span>
                   </div>
                 )}

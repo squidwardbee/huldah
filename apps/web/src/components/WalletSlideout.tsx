@@ -5,6 +5,7 @@ import {
   getWalletCategories,
   subscribeToWallet,
   unsubscribeFromWallet,
+  updateSubscription,
   getUserSubscriptions,
   type WalletProfile,
   type WalletTrade,
@@ -20,11 +21,14 @@ interface WalletSlideoutProps {
 
 export function WalletSlideout({ wallet, onClose }: WalletSlideoutProps) {
   const [activeTab, setActiveTab] = useState<'overview' | 'trades' | 'positions'>('overview');
+  const [isEditingNickname, setIsEditingNickname] = useState(false);
+  const [nicknameInput, setNicknameInput] = useState('');
   const { isAuthenticated } = useAuthStore();
   const queryClient = useQueryClient();
 
   useEffect(() => {
     setActiveTab('overview');
+    setIsEditingNickname(false);
   }, [wallet?.address]);
 
   const { data: detailData } = useQuery({
@@ -45,9 +49,10 @@ export function WalletSlideout({ wallet, onClose }: WalletSlideoutProps) {
     enabled: isAuthenticated,
   });
 
-  const isSubscribed = wallet && subscriptions?.some(
+  const currentSubscription = wallet && subscriptions?.find(
     s => s.walletAddress.toLowerCase() === wallet.address.toLowerCase()
   );
+  const isSubscribed = !!currentSubscription;
 
   const subscribeMutation = useMutation({
     mutationFn: () => wallet ? subscribeToWallet(wallet.address, { notifyOnWhaleTrade: true }) : Promise.reject(),
@@ -59,12 +64,35 @@ export function WalletSlideout({ wallet, onClose }: WalletSlideoutProps) {
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ['userSubscriptions'] }),
   });
 
+  const updateNicknameMutation = useMutation({
+    mutationFn: (nickname: string) => wallet ? updateSubscription(wallet.address, { nickname }) : Promise.reject(),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['userSubscriptions'] });
+      queryClient.invalidateQueries({ queryKey: ['subscriptionsDetailed'] });
+      setIsEditingNickname(false);
+    },
+  });
+
   const handleSubscribeToggle = () => {
     if (isSubscribed) {
       unsubscribeMutation.mutate();
     } else {
       subscribeMutation.mutate();
     }
+  };
+
+  const handleStartEditNickname = () => {
+    setNicknameInput(currentSubscription?.nickname || '');
+    setIsEditingNickname(true);
+  };
+
+  const handleSaveNickname = () => {
+    updateNicknameMutation.mutate(nicknameInput.trim());
+  };
+
+  const handleCancelEditNickname = () => {
+    setIsEditingNickname(false);
+    setNicknameInput('');
   };
 
   useEffect(() => {
@@ -82,10 +110,66 @@ export function WalletSlideout({ wallet, onClose }: WalletSlideoutProps) {
       <div className="fixed inset-0 bg-black/50 z-40" onClick={onClose} />
       <div className="fixed right-0 top-0 bottom-0 w-full max-w-lg bg-terminal-bg border-l border-terminal-border z-50 flex flex-col animate-slide-in-right">
         <div className="px-6 py-4 border-b border-terminal-border">
-          <div className="flex items-center justify-between mb-3">
-            <h2 className="font-mono text-lg text-neon-cyan">
-              {wallet.address.slice(0, 10)}...{wallet.address.slice(-6)}
-            </h2>
+          <div className="flex items-center justify-between mb-2">
+            <div>
+              {/* Show Polymarket username if available */}
+              {wallet.polymarketUsername && (
+                <div className="text-white text-lg font-semibold mb-0.5">
+                  {wallet.polymarketUsername}
+                </div>
+              )}
+              <h2 className={`font-mono text-neon-cyan ${wallet.polymarketUsername ? 'text-sm' : 'text-lg'}`}>
+                {wallet.address.slice(0, 10)}...{wallet.address.slice(-6)}
+              </h2>
+              {/* Show nickname if subscribed */}
+              {isSubscribed && !isEditingNickname && (
+                <button
+                  onClick={handleStartEditNickname}
+                  className="mt-1 text-sm text-terminal-muted hover:text-white flex items-center gap-1 group"
+                >
+                  {currentSubscription?.nickname ? (
+                    <>
+                      <span className="text-white">{currentSubscription.nickname}</span>
+                      <svg className="w-3 h-3 opacity-0 group-hover:opacity-100 transition-opacity" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z" />
+                      </svg>
+                    </>
+                  ) : (
+                    <span className="text-xs italic">+ Add nickname</span>
+                  )}
+                </button>
+              )}
+              {/* Nickname editing mode */}
+              {isSubscribed && isEditingNickname && (
+                <div className="mt-2 flex items-center gap-2">
+                  <input
+                    type="text"
+                    value={nicknameInput}
+                    onChange={(e) => setNicknameInput(e.target.value)}
+                    placeholder="Enter nickname..."
+                    className="bg-terminal-surface border border-terminal-border rounded px-2 py-1 text-sm text-white placeholder-terminal-muted focus:outline-none focus:border-neon-cyan/50 w-40"
+                    autoFocus
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter') handleSaveNickname();
+                      if (e.key === 'Escape') handleCancelEditNickname();
+                    }}
+                  />
+                  <button
+                    onClick={handleSaveNickname}
+                    disabled={updateNicknameMutation.isPending}
+                    className="px-2 py-1 text-xs font-mono text-neon-green hover:bg-neon-green/10 rounded"
+                  >
+                    {updateNicknameMutation.isPending ? '...' : 'Save'}
+                  </button>
+                  <button
+                    onClick={handleCancelEditNickname}
+                    className="px-2 py-1 text-xs font-mono text-terminal-muted hover:text-white"
+                  >
+                    Cancel
+                  </button>
+                </div>
+              )}
+            </div>
             <button onClick={onClose} className="p-1 text-terminal-muted hover:text-white">
               <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />

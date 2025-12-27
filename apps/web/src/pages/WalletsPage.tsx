@@ -1,7 +1,8 @@
-import { useState } from 'react';
+import { useState, useMemo } from 'react';
 import { useQuery } from '@tanstack/react-query';
-import { getWalletList, type WalletProfile, type WalletQueryParams } from '../lib/intelligenceApi';
+import { getWalletList, getUserSubscriptions, type WalletProfile, type WalletQueryParams } from '../lib/intelligenceApi';
 import { WalletSlideout } from '../components/WalletSlideout';
+import { useAuthStore } from '../stores/authStore';
 
 const TAG_COLORS: Record<string, string> = {
   whale: 'bg-neon-cyan/20 text-neon-cyan border-neon-cyan/30',
@@ -32,6 +33,8 @@ export function WalletsPage() {
 
   const [tagFilter, setTagFilter] = useState<string>('');
   const [minVolumeInput, setMinVolumeInput] = useState('');
+  const [searchQuery, setSearchQuery] = useState('');
+  const { isAuthenticated } = useAuthStore();
 
   const { data, isLoading, error } = useQuery({
     queryKey: ['walletList', filters, tagFilter, minVolumeInput],
@@ -43,7 +46,42 @@ export function WalletsPage() {
     refetchInterval: 60000,
   });
 
-  const wallets = data?.wallets || [];
+  // Fetch user subscriptions for nickname lookup
+  const { data: subscriptions = [] } = useQuery({
+    queryKey: ['userSubscriptions'],
+    queryFn: getUserSubscriptions,
+    enabled: isAuthenticated,
+  });
+
+  // Build nickname map from subscriptions
+  const nicknameMap = useMemo(() => {
+    const map = new Map<string, string>();
+    subscriptions.forEach(sub => {
+      if (sub.nickname) {
+        map.set(sub.walletAddress.toLowerCase(), sub.nickname);
+      }
+    });
+    return map;
+  }, [subscriptions]);
+
+  // Filter wallets by search query (address, polymarket username, or nickname)
+  const filteredWallets = useMemo(() => {
+    const allWallets = data?.wallets || [];
+    if (!searchQuery.trim()) return allWallets;
+
+    const q = searchQuery.toLowerCase().trim();
+    return allWallets.filter(wallet => {
+      // Search by address
+      if (wallet.address.toLowerCase().includes(q)) return true;
+      // Search by polymarket username
+      if (wallet.polymarketUsername?.toLowerCase().includes(q)) return true;
+      // Search by custom nickname
+      const nickname = nicknameMap.get(wallet.address.toLowerCase());
+      if (nickname?.toLowerCase().includes(q)) return true;
+      return false;
+    });
+  }, [data?.wallets, searchQuery, nicknameMap]);
+
   const pagination = data?.pagination;
 
   const handlePageChange = (direction: 'prev' | 'next') => {
@@ -67,8 +105,37 @@ export function WalletsPage() {
           </div>
         </div>
 
-        {/* Filters */}
+        {/* Search + Filters */}
         <div className="flex flex-wrap items-center gap-3">
+          {/* Search */}
+          <div className="relative">
+            <input
+              type="text"
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              placeholder="Search by username, address, or nickname..."
+              className="w-72 bg-terminal-surface border border-terminal-border rounded px-3 py-1.5 pl-8 text-sm text-white placeholder-terminal-muted font-mono focus:outline-none focus:border-neon-cyan/50"
+            />
+            <svg
+              className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-terminal-muted"
+              fill="none"
+              stroke="currentColor"
+              viewBox="0 0 24 24"
+            >
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
+            </svg>
+            {searchQuery && (
+              <button
+                onClick={() => setSearchQuery('')}
+                className="absolute right-2 top-1/2 -translate-y-1/2 text-terminal-muted hover:text-white"
+              >
+                <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                </svg>
+              </button>
+            )}
+          </div>
+
           {/* Sort By */}
           <div className="flex items-center gap-2">
             <span className="text-terminal-muted text-xs">Sort by</span>
@@ -134,9 +201,11 @@ export function WalletsPage() {
           <div className="p-8 text-center">
             <div className="text-neon-red text-sm">[ ERROR LOADING WALLETS ]</div>
           </div>
-        ) : wallets.length === 0 ? (
+        ) : filteredWallets.length === 0 ? (
           <div className="p-8 text-center">
-            <div className="text-terminal-muted text-sm">[ NO WALLETS FOUND ]</div>
+            <div className="text-terminal-muted text-sm">
+              {searchQuery ? '[ NO MATCHING WALLETS ]' : '[ NO WALLETS FOUND ]'}
+            </div>
           </div>
         ) : (
           <table className="w-full">
@@ -153,11 +222,12 @@ export function WalletsPage() {
               </tr>
             </thead>
             <tbody className="divide-y divide-terminal-border/30">
-              {wallets.map((wallet, idx) => (
+              {filteredWallets.map((wallet, idx) => (
                 <WalletRow
                   key={wallet.address}
                   wallet={wallet}
-                  rank={pagination ? pagination.offset + idx + 1 : idx + 1}
+                  rank={searchQuery ? idx + 1 : (pagination ? pagination.offset + idx + 1 : idx + 1)}
+                  nickname={nicknameMap.get(wallet.address.toLowerCase())}
                   isSelected={selectedWallet?.address === wallet.address}
                   onClick={() => setSelectedWallet(wallet)}
                 />
@@ -202,14 +272,17 @@ export function WalletsPage() {
 interface WalletRowProps {
   wallet: WalletProfile;
   rank: number;
+  nickname?: string;
   isSelected: boolean;
   onClick: () => void;
 }
 
-function WalletRow({ wallet, rank, isSelected, onClick }: WalletRowProps) {
+function WalletRow({ wallet, rank, nickname, isSelected, onClick }: WalletRowProps) {
   const pnl24h = wallet.performance.pnl24h;
   const totalPnl = wallet.performance.totalPnl;
   const winRate = wallet.performance.winRate * 100;
+  // Display priority: nickname > polymarket username > null
+  const displayName = nickname || wallet.polymarketUsername;
 
   return (
     <tr
@@ -225,11 +298,20 @@ function WalletRow({ wallet, rank, isSelected, onClick }: WalletRowProps) {
         </span>
       </td>
 
-      {/* Wallet Address */}
+      {/* Wallet Address + Username */}
       <td className="px-6 py-4">
-        <span className="text-neon-cyan font-mono text-sm">
-          {wallet.address.slice(0, 8)}...{wallet.address.slice(-4)}
-        </span>
+        {displayName ? (
+          <div>
+            <div className="text-white text-sm font-medium">{displayName}</div>
+            <div className="text-neon-cyan/70 font-mono text-xs mt-0.5">
+              {wallet.address.slice(0, 8)}...{wallet.address.slice(-4)}
+            </div>
+          </div>
+        ) : (
+          <span className="text-neon-cyan font-mono text-sm">
+            {wallet.address.slice(0, 8)}...{wallet.address.slice(-4)}
+          </span>
+        )}
       </td>
 
       {/* Tags */}

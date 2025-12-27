@@ -66,6 +66,7 @@ export class WalletProfileService {
     // Build the full profile
     const profile: WalletProfile = {
       address: wallet.address,
+      polymarketUsername: wallet.polymarket_username || undefined,
       entityId: wallet.entity_id || undefined,
       clusterId: wallet.cluster_id || undefined,
       firstSeen: new Date(wallet.first_seen),
@@ -335,7 +336,11 @@ export class WalletProfileService {
           CASE WHEN wp.outcome_index = 1 THEN m.last_price_yes ELSE m.last_price_no END,
           0.5
         ) as current_price,
-        wp.unrealized_pnl,
+        -- Calculate unrealized PnL: (current_price - avg_entry_price) * size
+        (COALESCE(
+          CASE WHEN wp.outcome_index = 1 THEN m.last_price_yes ELSE m.last_price_no END,
+          0.5
+        ) - COALESCE(wp.avg_entry_price, 0.5)) * wp.net_position as unrealized_pnl,
         wp.first_trade_time,
         wp.last_trade_time
       FROM wallet_positions wp
@@ -503,6 +508,72 @@ export class WalletProfileService {
     `, [userId, normalizedAddress]);
 
     return (result.rowCount ?? 0) > 0;
+  }
+
+  /**
+   * Update subscription settings (nickname, notes, notification preferences)
+   */
+  async updateSubscription(
+    userId: number,
+    walletAddress: string,
+    options: {
+      nickname?: string;
+      notes?: string;
+      notifyOnTrade?: boolean;
+      notifyOnWhaleTrade?: boolean;
+      notifyOnNewPosition?: boolean;
+      notifyOnPositionClosed?: boolean;
+    }
+  ): Promise<WalletSubscription | null> {
+    const normalizedAddress = walletAddress.toLowerCase();
+
+    // Build dynamic update query based on provided options
+    const updates: string[] = [];
+    const values: (string | boolean | number)[] = [userId, normalizedAddress];
+    let paramIndex = 3;
+
+    if (options.nickname !== undefined) {
+      updates.push(`nickname = $${paramIndex++}`);
+      values.push(options.nickname);
+    }
+    if (options.notes !== undefined) {
+      updates.push(`notes = $${paramIndex++}`);
+      values.push(options.notes);
+    }
+    if (options.notifyOnTrade !== undefined) {
+      updates.push(`notify_on_trade = $${paramIndex++}`);
+      values.push(options.notifyOnTrade);
+    }
+    if (options.notifyOnWhaleTrade !== undefined) {
+      updates.push(`notify_on_whale_trade = $${paramIndex++}`);
+      values.push(options.notifyOnWhaleTrade);
+    }
+    if (options.notifyOnNewPosition !== undefined) {
+      updates.push(`notify_on_new_position = $${paramIndex++}`);
+      values.push(options.notifyOnNewPosition);
+    }
+    if (options.notifyOnPositionClosed !== undefined) {
+      updates.push(`notify_on_position_closed = $${paramIndex++}`);
+      values.push(options.notifyOnPositionClosed);
+    }
+
+    if (updates.length === 0) {
+      // Nothing to update, just return existing
+      const { rows } = await this.db.query(`
+        SELECT * FROM wallet_subscriptions
+        WHERE user_id = $1 AND wallet_address = $2
+      `, [userId, normalizedAddress]);
+      return rows.length > 0 ? this.rowToSubscription(rows[0]) : null;
+    }
+
+    const { rows } = await this.db.query(`
+      UPDATE wallet_subscriptions
+      SET ${updates.join(', ')}
+      WHERE user_id = $1 AND wallet_address = $2
+      RETURNING *
+    `, values);
+
+    return rows.length > 0 ? this.rowToSubscription(rows[0]) : null;
   }
 
   /**
