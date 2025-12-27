@@ -59,6 +59,7 @@ export interface WalletPerformance {
   realizedPnl: number;
   unrealizedPnl: number;
   totalPnl: number;
+  pnl24h: number;  // PnL from trades in last 24 hours
   winCount: number;
   lossCount: number;
   winRate: number;

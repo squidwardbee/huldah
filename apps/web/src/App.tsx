@@ -295,13 +295,17 @@ function Dashboard() {
           </div>
 
           {/* Right: Balance + Search + Wallet */}
-          <div className="flex items-center gap-3">
-            <BalanceDisplay />
-            <SearchBar
-              onSelectMarket={handleSelectMarket}
-              onSelectWallet={handleSelectWallet}
-            />
-            <ConnectWallet />
+          <div className="flex items-center">
+            <div className="flex items-center gap-3">
+              <BalanceDisplay />
+              <SearchBar
+                onSelectMarket={handleSelectMarket}
+                onSelectWallet={handleSelectWallet}
+              />
+              <ConnectWallet />
+            </div>
+            {/* Right spacer to push content ~20% from right */}
+            <div className="w-[calc(20vw-120px)] min-w-0 max-w-32" />
           </div>
         </div>
       </header>

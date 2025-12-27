@@ -18,6 +18,7 @@ export interface WalletProfile {
     realizedPnl: number;
     unrealizedPnl: number;
     totalPnl: number;
+    pnl24h: number;
     winCount: number;
     lossCount: number;
     winRate: number;

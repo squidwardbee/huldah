@@ -207,7 +207,8 @@ interface WalletRowProps {
 }
 
 function WalletRow({ wallet, rank, isSelected, onClick }: WalletRowProps) {
-  const pnl = wallet.performance.realizedPnl;
+  const pnl24h = wallet.performance.pnl24h;
+  const totalPnl = wallet.performance.totalPnl;
   const winRate = wallet.performance.winRate * 100;
 
   return (
@@ -245,17 +246,17 @@ function WalletRow({ wallet, rank, isSelected, onClick }: WalletRowProps) {
         </div>
       </td>
 
-      {/* 24h PnL - using realized for now */}
+      {/* 24h PnL */}
       <td className="px-6 py-4 text-right">
-        <span className={`font-mono text-sm ${pnl >= 0 ? 'text-neon-green' : 'text-neon-red'}`}>
-          {pnl >= 0 ? '+' : ''}{formatAmount(pnl)}
+        <span className={`font-mono text-sm ${pnl24h >= 0 ? 'text-neon-green' : 'text-neon-red'}`}>
+          {pnl24h >= 0 ? '+' : ''}{formatAmount(pnl24h)}
         </span>
       </td>
 
       {/* Total PnL */}
       <td className="px-6 py-4 text-right">
-        <span className={`font-mono text-sm ${wallet.performance.totalPnl >= 0 ? 'text-neon-green' : 'text-neon-red'}`}>
-          {wallet.performance.totalPnl >= 0 ? '+' : ''}{formatAmount(wallet.performance.totalPnl)}
+        <span className={`font-mono text-sm ${totalPnl >= 0 ? 'text-neon-green' : 'text-neon-red'}`}>
+          {totalPnl >= 0 ? '+' : ''}{formatAmount(totalPnl)}
         </span>
       </td>
 

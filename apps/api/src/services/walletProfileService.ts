@@ -41,7 +41,8 @@ export class WalletProfileService {
   async getWalletProfile(address: string): Promise<WalletProfile | null> {
     const normalizedAddress = address.toLowerCase();
 
-    // Get base wallet data
+    // Get base wallet data with 24h PnL from the stored column
+    // The pnl_24h column is synced from Polymarket's leaderboard API
     const { rows } = await this.db.query(`
       SELECT
         w.*,
@@ -82,6 +83,7 @@ export class WalletProfileService {
         realizedPnl: parseFloat(wallet.realized_pnl) || 0,
         unrealizedPnl: parseFloat(wallet.unrealized_pnl) || 0,
         totalPnl: (parseFloat(wallet.realized_pnl) || 0) + (parseFloat(wallet.unrealized_pnl) || 0),
+        pnl24h: parseFloat(wallet.pnl_24h) || 0,
         winCount: wallet.win_count || 0,
         lossCount: wallet.loss_count || 0,
         winRate: this.calculateWinRate(wallet.win_count, wallet.loss_count),
@@ -217,7 +219,8 @@ export class WalletProfileService {
     const countResult = await this.db.query(countQuery, values);
     const total = parseInt(countResult.rows[0].total);
 
-    // Get wallets
+    // Get wallets with 24h PnL from the stored column
+    // The pnl_24h column is synced from Polymarket's leaderboard API
     const query = `
       SELECT *
       FROM wallets
@@ -689,7 +692,8 @@ export class WalletProfileService {
     const sortMap: Record<string, string> = {
       'volume': 'total_volume',
       'volume_24h': 'volume_24h',
-      'pnl': 'realized_pnl',
+      'pnl': 'pnl_24h',  // 24h PnL - computed in SELECT as pnl_24h alias
+      'total_pnl': 'realized_pnl',  // Total realized PnL
       'win_rate': 'CASE WHEN (win_count + loss_count) > 0 THEN win_count::float / (win_count + loss_count) ELSE 0 END',
       'insider_score': 'insider_score',
       'smart_money_score': 'smart_money_score',
@@ -716,6 +720,7 @@ export class WalletProfileService {
         realizedPnl: parseFloat(row.realized_pnl) || 0,
         unrealizedPnl: parseFloat(row.unrealized_pnl) || 0,
         totalPnl: (parseFloat(row.realized_pnl) || 0) + (parseFloat(row.unrealized_pnl) || 0),
+        pnl24h: parseFloat(row.pnl_24h) || 0,
         winCount: row.win_count || 0,
         lossCount: row.loss_count || 0,
         winRate: this.calculateWinRate(row.win_count, row.loss_count),

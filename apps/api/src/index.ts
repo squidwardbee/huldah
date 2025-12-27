@@ -230,6 +230,17 @@ app.post('/api/wallets/seed', async (_req, res) => {
   }
 });
 
+// Sync 24h PnL data from Polymarket leaderboard API
+app.post('/api/wallets/sync-24h', async (_req, res) => {
+  try {
+    const count = await subgraphService.sync24hPnL();
+    res.json({ message: `Updated ${count} wallets with 24h PnL` });
+  } catch (err) {
+    console.error('Error syncing 24h PnL:', err);
+    res.status(500).json({ error: 'Failed to sync 24h PnL' });
+  }
+});
+
 // ============ WALLET INTELLIGENCE ENDPOINTS ============
 
 // List wallets with advanced filtering
@@ -1699,14 +1710,27 @@ server.listen(PORT, async () => {
   // Seed top wallets from Polymarket subgraph on startup
   console.log('[Server] Seeding top wallets from Polymarket subgraph...');
   await subgraphService.seedTopWallets();
-  
+
+  // Sync 24h PnL data from Polymarket API on startup
+  console.log('[Server] Syncing 24h PnL data...');
+  await subgraphService.sync24hPnL();
+
+  // Start scheduled 24h PnL sync (every 5 minutes)
+  setInterval(async () => {
+    try {
+      await subgraphService.sync24hPnL();
+    } catch (err) {
+      console.error('[Server] Error syncing 24h PnL:', err);
+    }
+  }, 5 * 60 * 1000);
+
   // Start market sync first (needed for insider detection)
   console.log('[Server] Starting market sync...');
   marketSync.startScheduled(15 * 60 * 1000);  // Every 15 minutes
-  
+
   // Start trade polling
   await poller.start();
-  
+
   // Start wallet scoring (runs every 5 minutes)
   walletScorer.startScheduled(5 * 60 * 1000);
 
