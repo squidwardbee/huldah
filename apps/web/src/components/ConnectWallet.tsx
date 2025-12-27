@@ -133,8 +133,8 @@ export function ConnectWallet() {
             onClick={() => setShowModal(true)}
             disabled={isConnecting || isAuthenticating}
             className="
-              px-5 py-2.5 bg-terminal-surface border border-neon-cyan/40
-              rounded-lg text-neon-cyan text-sm font-mono font-semibold
+              px-3 py-1.5 bg-terminal-surface border border-neon-cyan/40
+              rounded text-neon-cyan text-xs font-mono font-semibold
               hover:bg-neon-cyan/10 hover:border-neon-cyan hover:shadow-[0_0_15px_rgba(0,255,245,0.3)]
               disabled:opacity-50 disabled:cursor-not-allowed
               transition-all duration-200
@@ -145,7 +145,7 @@ export function ConnectWallet() {
             ) : isAuthenticating ? (
               <span className="animate-pulse">SIGNING...</span>
             ) : (
-              'CONNECT WALLET'
+              'CONNECT'
             )}
           </button>
           {error && (

@@ -50,13 +50,15 @@ export class MarketSyncService {
 
   /**
    * Sync recently closed markets and check for resolutions
+   * Only fetches the most recent 1000 closed markets to prevent memory issues
    */
   async syncResolvedMarkets(): Promise<number> {
     console.log('[MarketSync] Checking for resolved markets...');
 
     try {
-      const closedMarkets = await this.gamma.getAllClosedMarkets();
-      console.log(`[MarketSync] Fetched ${closedMarkets.length} closed markets`);
+      // Only fetch recent closed markets (not all 70k+) to prevent heap overflow
+      const closedMarkets = await this.gamma.getRecentlyClosedMarkets(1000);
+      console.log(`[MarketSync] Fetched ${closedMarkets.length} recently closed markets`);
 
       let resolved = 0;
       for (const market of closedMarkets) {

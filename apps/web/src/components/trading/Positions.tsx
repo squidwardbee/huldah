@@ -1,3 +1,4 @@
+import { useState, useMemo } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { useAuthStore } from '../../stores/authStore';
 import { useWalletTrading } from '../../hooks/useWalletTrading';
@@ -14,6 +15,7 @@ interface Position {
   unrealizedPnl: number;
   realizedPnl?: number;
   marketSlug?: string;
+  createdAt?: string;
 }
 
 interface Order {
@@ -35,6 +37,7 @@ interface PositionsProps {
 export function Positions({ compact = false }: PositionsProps) {
   const { token, isAuthenticated } = useAuthStore();
   const { proxyWallet } = useWalletTrading();
+  const [hideDust, setHideDust] = useState(true);
 
   const { data: positions = [], isLoading: loadingPositions } = useQuery({
     queryKey: ['positions', proxyWallet],
@@ -50,6 +53,24 @@ export function Positions({ compact = false }: PositionsProps) {
     refetchInterval: 5000,
   });
 
+  // Filter and sort positions
+  const filteredPositions = useMemo(() => {
+    let filtered = positions as Position[];
+
+    // Hide dust positions (< 0.01 shares)
+    if (hideDust) {
+      filtered = filtered.filter((p: Position) => Math.abs(p.size) >= 0.01);
+    }
+
+    // Sort by date (oldest first / ascending) - fallback to size if no date
+    return filtered.sort((a: Position, b: Position) => {
+      if (a.createdAt && b.createdAt) {
+        return new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime();
+      }
+      return Math.abs(a.size) - Math.abs(b.size);
+    });
+  }, [positions, hideDust]);
+
   const openOrders = isAuthenticated ? orders.filter((o: Order) => o.status === 'LIVE' || o.status === 'OPEN') : [];
 
   // Compact mode: just show positions in a simple table format
@@ -57,32 +78,47 @@ export function Positions({ compact = false }: PositionsProps) {
     if (loadingPositions) {
       return <div className="text-center text-terminal-muted text-xs py-2">Loading...</div>;
     }
-    if (positions.length === 0) {
-      return <div className="text-center text-terminal-muted text-xs py-2">No positions</div>;
-    }
     return (
-      <table className="w-full text-xs">
-        <thead>
-          <tr className="text-terminal-muted uppercase text-[10px]">
-            <th className="text-left py-1 px-2">Market</th>
-            <th className="text-right py-1 px-2">Size</th>
-            <th className="text-right py-1 px-2">Entry</th>
-            <th className="text-right py-1 px-2">PnL</th>
-          </tr>
-        </thead>
-        <tbody>
-          {positions.map((pos: Position) => (
-            <tr key={pos.tokenId} className="border-t border-terminal-border/30">
-              <td className="py-1.5 px-2 text-white truncate max-w-[200px]">{pos.marketQuestion}</td>
-              <td className="py-1.5 px-2 text-right text-white font-mono">{pos.size}</td>
-              <td className="py-1.5 px-2 text-right text-terminal-muted font-mono">{(pos.avgPrice * 100).toFixed(1)}¢</td>
-              <td className={`py-1.5 px-2 text-right font-mono ${pos.unrealizedPnl >= 0 ? 'text-neon-green' : 'text-neon-red'}`}>
-                {pos.unrealizedPnl >= 0 ? '+' : ''}{pos.unrealizedPnl.toFixed(2)}
-              </td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
+      <div className="flex flex-col h-full">
+        {/* Hide dust checkbox */}
+        <div className="flex items-center justify-end px-2 py-1 border-b border-terminal-border/30">
+          <label className="flex items-center gap-1.5 text-[10px] text-terminal-muted cursor-pointer">
+            <input
+              type="checkbox"
+              checked={hideDust}
+              onChange={(e) => setHideDust(e.target.checked)}
+              className="w-3 h-3 rounded border-terminal-border bg-terminal-bg accent-neon-cyan"
+            />
+            Hide dust
+          </label>
+        </div>
+        {filteredPositions.length === 0 ? (
+          <div className="text-center text-terminal-muted text-xs py-2">No positions</div>
+        ) : (
+          <table className="w-full text-xs">
+            <thead>
+              <tr className="text-terminal-muted uppercase text-[10px]">
+                <th className="text-left py-1 px-2">Market</th>
+                <th className="text-right py-1 px-2">Size</th>
+                <th className="text-right py-1 px-2">Entry</th>
+                <th className="text-right py-1 px-2">PnL</th>
+              </tr>
+            </thead>
+            <tbody>
+              {filteredPositions.map((pos: Position) => (
+                <tr key={pos.tokenId} className="border-t border-terminal-border/30">
+                  <td className="py-1.5 px-2 text-white truncate max-w-[200px]">{pos.marketQuestion}</td>
+                  <td className="py-1.5 px-2 text-right text-white font-mono">{pos.size}</td>
+                  <td className="py-1.5 px-2 text-right text-terminal-muted font-mono">{(pos.avgPrice * 100).toFixed(1)}¢</td>
+                  <td className={`py-1.5 px-2 text-right font-mono ${pos.unrealizedPnl >= 0 ? 'text-neon-green' : 'text-neon-red'}`}>
+                    {pos.unrealizedPnl >= 0 ? '+' : ''}{pos.unrealizedPnl.toFixed(2)}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
+      </div>
     );
   }
 
@@ -92,7 +128,18 @@ export function Positions({ compact = false }: PositionsProps) {
       <div className="bg-terminal-surface/80 border border-terminal-border rounded-lg overflow-hidden">
         <div className="px-4 py-3 border-b border-terminal-border flex items-center justify-between">
           <h3 className="text-white font-mono text-sm font-semibold">POSITIONS</h3>
-          <span className="text-terminal-muted text-xs">{positions.length} open</span>
+          <div className="flex items-center gap-3">
+            <label className="flex items-center gap-1.5 text-xs text-terminal-muted cursor-pointer">
+              <input
+                type="checkbox"
+                checked={hideDust}
+                onChange={(e) => setHideDust(e.target.checked)}
+                className="w-3 h-3 rounded border-terminal-border bg-terminal-bg accent-neon-cyan"
+              />
+              Hide dust
+            </label>
+            <span className="text-terminal-muted text-xs">{filteredPositions.length} open</span>
+          </div>
         </div>
 
         {loadingPositions ? (
@@ -101,14 +148,14 @@ export function Positions({ compact = false }: PositionsProps) {
               <div key={i} className="animate-pulse h-16 bg-terminal-border/20 rounded" />
             ))}
           </div>
-        ) : positions.length === 0 ? (
+        ) : filteredPositions.length === 0 ? (
           <div className="p-8 text-center">
             <div className="text-terminal-muted text-sm mb-2">No open positions</div>
             <div className="text-terminal-muted/50 text-xs">Place an order to get started</div>
           </div>
         ) : (
           <div className="divide-y divide-terminal-border/30">
-            {positions.map((pos: Position) => (
+            {filteredPositions.map((pos: Position) => (
               <div key={pos.tokenId} className="px-4 py-3">
                 <div className="flex items-start justify-between mb-2">
                   <div className="flex-1 min-w-0">

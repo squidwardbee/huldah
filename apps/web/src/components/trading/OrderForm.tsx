@@ -182,20 +182,6 @@ export function OrderForm({
 
   const isProcessing = isSubmitting || isTradeLoading;
 
-  // Debug: log why button might be disabled
-  console.log('[OrderForm] Button state:', {
-    isProcessing,
-    isPriceValid,
-    canPlaceMarketOrder,
-    sizeNum,
-    orderMode,
-    priceNum,
-    bestBid,
-    bestAsk,
-    side,
-    disabled: isProcessing || !isPriceValid || !canPlaceMarketOrder || sizeNum <= 0,
-  });
-
   // Format balance for compact display
   const formattedBalance = walletTrading.balance
     ? `$${(parseFloat(walletTrading.balance) / 1e6).toFixed(2)}`

@@ -1,11 +1,13 @@
 import { QueryClient, QueryClientProvider, useQuery } from '@tanstack/react-query';
 import { WagmiProvider } from 'wagmi';
 import { useState, useMemo, useRef, useEffect } from 'react';
+import { BrowserRouter, Routes, Route, useNavigate, useLocation } from 'react-router-dom';
 import { WhaleFeed } from './components/WhaleFeed';
 import { TopWallets } from './components/TopWallets';
 import { TradingView } from './components/trading';
 import { ConnectWallet } from './components/ConnectWallet';
 import { useWhaleFeed } from './hooks/useWhaleFeed';
+import { useWalletTrading } from './hooks/useWalletTrading';
 import { wagmiConfig } from './lib/wagmi';
 import { useAuthStore } from './stores/authStore';
 import { getMarketsSimple, type Market } from './lib/tradingApi';
@@ -20,7 +22,22 @@ const queryClient = new QueryClient({
   },
 });
 
-type Tab = 'intelligence' | 'trading';
+// Balance display component for header
+function BalanceDisplay() {
+  const { balance } = useWalletTrading();
+  const { isAuthenticated } = useAuthStore();
+
+  if (!isAuthenticated || !balance) return null;
+
+  const formattedBalance = (parseFloat(balance) / 1e6).toFixed(2);
+
+  return (
+    <div className="flex items-center gap-1.5 px-2 py-1 bg-terminal-surface/50 border border-terminal-border rounded text-xs font-mono">
+      <span className="text-terminal-muted">BAL:</span>
+      <span className="text-neon-green">${formattedBalance}</span>
+    </div>
+  );
+}
 
 interface SearchBarProps {
   onSelectMarket?: (market: Market) => void;
@@ -171,14 +188,29 @@ function SearchBar({ onSelectMarket, onSelectWallet }: SearchBarProps) {
 
 function Dashboard() {
   useWhaleFeed();
-  const [activeTab, setActiveTab] = useState<Tab>('intelligence');
+  const navigate = useNavigate();
+  const location = useLocation();
   const [selectedMarketFromSearch, setSelectedMarketFromSearch] = useState<Market | null>(null);
+  const [tradingViewKey, setTradingViewKey] = useState(0);
   const { isAuthenticated } = useAuthStore();
+
+  const activeTab = location.pathname === '/trading' ? 'trading' : 'intelligence';
 
   // Handle market selection from search
   const handleSelectMarket = (market: Market) => {
     setSelectedMarketFromSearch(market);
-    setActiveTab('trading');
+    navigate('/trading');
+  };
+
+  // Handle clicking Trading tab - reset to market list
+  const handleTradingClick = () => {
+    if (activeTab === 'trading') {
+      // Already on trading, reset to market list by incrementing key
+      setSelectedMarketFromSearch(null);
+      setTradingViewKey(k => k + 1);
+    } else {
+      navigate('/trading');
+    }
   };
 
   // Handle wallet selection from search (copy to clipboard)
@@ -206,13 +238,13 @@ function Dashboard() {
             <nav className="flex gap-1">
               <TabButton
                 active={activeTab === 'intelligence'}
-                onClick={() => setActiveTab('intelligence')}
+                onClick={() => navigate('/intelligence')}
               >
                 INTELLIGENCE
               </TabButton>
               <TabButton
                 active={activeTab === 'trading'}
-                onClick={() => setActiveTab('trading')}
+                onClick={handleTradingClick}
                 badge={isAuthenticated ? undefined : 'SIGN IN'}
               >
                 TRADING
@@ -220,8 +252,9 @@ function Dashboard() {
             </nav>
           </div>
 
-          {/* Right: Search + Wallet */}
-          <div className="flex items-center gap-4">
+          {/* Right: Balance + Search + Wallet */}
+          <div className="flex items-center gap-3">
+            <BalanceDisplay />
             <SearchBar
               onSelectMarket={handleSelectMarket}
               onSelectWallet={handleSelectWallet}
@@ -233,16 +266,25 @@ function Dashboard() {
 
       {/* Content - Full height */}
       <main className="flex-1 animate-fade-in overflow-hidden" style={{ animationDelay: '100ms' }}>
-        {activeTab === 'intelligence' ? (
-          <div className="h-full p-4">
-            <IntelligenceView />
-          </div>
-        ) : (
-          <TradingView
-            initialMarket={selectedMarketFromSearch}
-            onMarketCleared={() => setSelectedMarketFromSearch(null)}
-          />
-        )}
+        <Routes>
+          <Route path="/intelligence" element={
+            <div className="h-full p-4">
+              <IntelligenceView />
+            </div>
+          } />
+          <Route path="/trading" element={
+            <TradingView
+              key={tradingViewKey}
+              initialMarket={selectedMarketFromSearch}
+              onMarketCleared={() => setSelectedMarketFromSearch(null)}
+            />
+          } />
+          <Route path="*" element={
+            <div className="h-full p-4">
+              <IntelligenceView />
+            </div>
+          } />
+        </Routes>
       </main>
     </div>
   );
@@ -326,10 +368,12 @@ function StatCard({
 
 export default function App() {
   return (
-    <WagmiProvider config={wagmiConfig}>
-      <QueryClientProvider client={queryClient}>
-        <Dashboard />
-      </QueryClientProvider>
-    </WagmiProvider>
+    <BrowserRouter>
+      <WagmiProvider config={wagmiConfig}>
+        <QueryClientProvider client={queryClient}>
+          <Dashboard />
+        </QueryClientProvider>
+      </WagmiProvider>
+    </BrowserRouter>
   );
 }

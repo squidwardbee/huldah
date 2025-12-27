@@ -136,16 +136,20 @@ export class GammaClient {
     return markets;
   }
 
-  async getAllClosedMarkets(): Promise<GammaMarket[]> {
+  /**
+   * Get recently closed markets (limited to prevent memory issues)
+   * For resolution tracking, we only need recent closures - not the full 70k+ history
+   */
+  async getRecentlyClosedMarkets(maxMarkets = 1000): Promise<GammaMarket[]> {
     const markets: GammaMarket[] = [];
     let offset = 0;
     const batchSize = 100;
     let consecutiveErrors = 0;
     const maxConsecutiveErrors = 3;
 
-    console.log('[GammaClient] Fetching all closed markets...');
+    console.log(`[GammaClient] Fetching recently closed markets (max ${maxMarkets})...`);
 
-    while (true) {
+    while (markets.length < maxMarkets) {
       try {
         const batch = await this.getClosedMarkets(batchSize, offset);
         consecutiveErrors = 0; // Reset on success
@@ -153,10 +157,6 @@ export class GammaClient {
         if (batch.length === 0) break;
         markets.push(...batch);
         offset += batchSize;
-
-        if (markets.length % 500 === 0) {
-          console.log(`[GammaClient] Fetched ${markets.length} closed markets so far...`);
-        }
 
         if (batch.length < batchSize) break;
 
@@ -176,7 +176,9 @@ export class GammaClient {
       }
     }
 
-    console.log(`[GammaClient] Total closed markets fetched: ${markets.length}`);
-    return markets;
+    // Trim to exact max if we overshot
+    const result = markets.slice(0, maxMarkets);
+    console.log(`[GammaClient] Fetched ${result.length} recently closed markets`);
+    return result;
   }
 }

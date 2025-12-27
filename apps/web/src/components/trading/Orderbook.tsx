@@ -83,7 +83,7 @@ export function Orderbook({ tokenId, onPriceClick, onBestPricesChange, compact =
     ? (parseFloat(asks[0].price) - parseFloat(bids[0].price)) * 100
     : 0;
 
-  // Compact mode: minimal height orderbook
+  // Compact mode: minimal height orderbook - top aligned
   if (compact) {
     return (
       <div className="bg-terminal-surface/80 overflow-hidden flex flex-col h-full">
@@ -94,8 +94,8 @@ export function Orderbook({ tokenId, onPriceClick, onBestPricesChange, compact =
           </span>
         </div>
 
-        {/* Asks */}
-        <div className="flex-1 flex flex-col justify-end overflow-hidden">
+        {/* Asks - reversed so highest at top */}
+        <div className="flex flex-col overflow-hidden">
           {asks.slice().reverse().map((ask, i) => {
             const size = parseFloat(ask.size);
             const price = parseFloat(ask.price);
@@ -119,7 +119,7 @@ export function Orderbook({ tokenId, onPriceClick, onBestPricesChange, compact =
         </div>
 
         {/* Bids */}
-        <div className="flex-1 flex flex-col overflow-hidden">
+        <div className="flex flex-col overflow-hidden">
           {bids.map((bid, i) => {
             const size = parseFloat(bid.size);
             const price = parseFloat(bid.price);
@@ -134,6 +134,9 @@ export function Orderbook({ tokenId, onPriceClick, onBestPricesChange, compact =
             );
           })}
         </div>
+
+        {/* Spacer to push content to top */}
+        <div className="flex-1" />
 
         {asks.length === 0 && bids.length === 0 && (
           <div className="p-2 text-center text-terminal-muted text-[10px]">Empty</div>
