@@ -54,7 +54,10 @@ declare global {
 }
 
 const app = express();
-app.use(cors());
+app.use(cors({
+  origin: true, // Allow all origins in development
+  credentials: true,
+}));
 app.use(express.json());
 
 // Database - supports DATABASE_URL (Railway/Heroku) or individual vars

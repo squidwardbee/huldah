@@ -54,7 +54,7 @@ export class ClusterDetector {
           WHERE table_schema = 'public' AND table_name = 'wallet_clusters'
         ) as exists
       `);
-      this.tablesExist = rows[0]?.exists || false;
+      this.tablesExist = rows[0]?.exists === true;
       return this.tablesExist;
     } catch {
       this.tablesExist = false;
