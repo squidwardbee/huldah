@@ -17,12 +17,15 @@ import { WalletScorer } from './services/walletScorer.js';
 import { SubgraphService } from './services/subgraphService.js';
 import { SubgraphClient } from './services/polymarket/subgraphClient.js';
 import { InsiderDetector } from './services/insiderDetector.js';
+import { InsiderDetectionServiceV2 } from './services/insiderDetectionV2.js';
 import { MarketSyncService } from './services/marketSync.js';
 import { InsiderPredictor, TrainingExporter } from './services/ml/index.js';
 import { WalletProfileService } from './services/walletProfileService.js';
 import { WalletObserver } from './services/walletObserver.js';
 import { DTWService } from './services/dtwService.js';
 import { PatternService } from './services/patternService.js';
+import { FundingTracker } from './services/fundingTracker.js';
+import { ClusterDetector } from './services/clusterDetector.js';
 import { WalletQueryParams, WalletTag } from '@huldah/shared';
 import {
   OrderExecutor,
@@ -77,6 +80,7 @@ const walletScorer = new WalletScorer(db);
 const subgraphService = new SubgraphService(db);
 const subgraphClient = new SubgraphClient();
 const insiderDetector = new InsiderDetector(db);
+const insiderDetectorV2 = new InsiderDetectionServiceV2(db);
 const marketSync = new MarketSyncService(db);
 const insiderPredictor = new InsiderPredictor(db);
 const trainingExporter = new TrainingExporter(db);
@@ -84,6 +88,8 @@ const walletProfileService = new WalletProfileService(db);
 const walletObserver = new WalletObserver(db, redis);
 const dtwService = new DTWService(db);
 const patternService = new PatternService(db);
+const fundingTracker = new FundingTracker(db);
+const clusterDetector = new ClusterDetector(db, fundingTracker);
 
 // Trading executor (initialized lazily on first trade)
 let orderExecutor: OrderExecutor | null = null;
@@ -359,11 +365,167 @@ app.get('/api/intelligence/wallets/:address/snapshots', async (req, res) => {
 app.get('/api/intelligence/wallets/:address/cluster', async (req, res) => {
   try {
     const { address } = req.params;
-    const cluster = await walletProfileService.getWalletCluster(address);
+    const cluster = await clusterDetector.getClusterForWallet(address);
     res.json(cluster);
   } catch (err) {
     console.error('Error fetching wallet cluster:', err);
     res.status(500).json({ error: 'Failed to fetch wallet cluster' });
+  }
+});
+
+// Get wallet funding summary
+app.get('/api/intelligence/wallets/:address/funding', async (req, res) => {
+  try {
+    const { address } = req.params;
+    const funding = await fundingTracker.getFundingSummary(address);
+    res.json(funding);
+  } catch (err) {
+    console.error('Error fetching wallet funding:', err);
+    res.status(500).json({ error: 'Failed to fetch wallet funding' });
+  }
+});
+
+// ============ CLUSTER ENDPOINTS ============
+
+// List all clusters
+app.get('/api/clusters', async (req, res) => {
+  try {
+    const method = req.query.method as string | undefined;
+    const minMembers = parseInt(req.query.minMembers as string) || 2;
+    const minVolume = parseFloat(req.query.minVolume as string) || 0;
+    const limit = Math.min(parseInt(req.query.limit as string) || 50, 100);
+    const offset = parseInt(req.query.offset as string) || 0;
+
+    const result = await clusterDetector.listClusters({
+      method,
+      minMembers,
+      minVolume,
+      limit,
+      offset,
+    });
+
+    res.json(result);
+  } catch (err) {
+    console.error('Error listing clusters:', err);
+    res.status(500).json({ error: 'Failed to list clusters' });
+  }
+});
+
+// Get cluster by ID with full details
+app.get('/api/clusters/:clusterId', async (req, res) => {
+  try {
+    const { clusterId } = req.params;
+    const cluster = await clusterDetector.getCluster(clusterId);
+
+    if (!cluster) {
+      return res.status(404).json({ error: 'Cluster not found' });
+    }
+
+    res.json(cluster);
+  } catch (err) {
+    console.error('Error fetching cluster:', err);
+    res.status(500).json({ error: 'Failed to fetch cluster' });
+  }
+});
+
+// Get recent trades by cluster members
+app.get('/api/clusters/:clusterId/trades', async (req, res) => {
+  try {
+    const { clusterId } = req.params;
+    const limit = Math.min(parseInt(req.query.limit as string) || 50, 200);
+    const trades = await clusterDetector.getClusterTrades(clusterId, limit);
+    res.json(trades);
+  } catch (err) {
+    console.error('Error fetching cluster trades:', err);
+    res.status(500).json({ error: 'Failed to fetch cluster trades' });
+  }
+});
+
+// Trigger cluster detection (admin)
+app.post('/api/clusters/detect', async (_req, res) => {
+  try {
+    // Run in background, don't wait
+    clusterDetector.detectAllClusters()
+      .then(() => console.log('[ClusterDetector] Detection complete'))
+      .catch(err => console.error('[ClusterDetector] Detection failed:', err));
+
+    res.json({ message: 'Cluster detection started' });
+  } catch (err) {
+    console.error('Error starting cluster detection:', err);
+    res.status(500).json({ error: 'Failed to start cluster detection' });
+  }
+});
+
+// Trigger funding backfill (admin)
+app.post('/api/clusters/backfill-funding', async (req, res) => {
+  try {
+    const minVolume = parseFloat(req.query.minVolume as string) || 10000;
+    const limit = Math.min(parseInt(req.query.limit as string) || 100, 500);
+
+    // Run in background
+    fundingTracker.backfillExistingWallets(minVolume, limit)
+      .then(() => console.log('[FundingTracker] Backfill complete'))
+      .catch(err => console.error('[FundingTracker] Backfill failed:', err));
+
+    res.json({ message: 'Funding backfill started', minVolume, limit });
+  } catch (err) {
+    console.error('Error starting funding backfill:', err);
+    res.status(500).json({ error: 'Failed to start funding backfill' });
+  }
+});
+
+// Get cluster statistics
+app.get('/api/clusters/stats', async (_req, res) => {
+  try {
+    // Check if table exists first
+    const { rows: tableCheck } = await db.query(`
+      SELECT EXISTS (
+        SELECT FROM information_schema.tables
+        WHERE table_schema = 'public' AND table_name = 'wallet_clusters'
+      ) as exists
+    `);
+
+    if (!tableCheck[0]?.exists) {
+      return res.json({
+        totalClusters: 0,
+        totalMembers: 0,
+        totalVolume: 0,
+        avgMembers: 0,
+        avgConfidence: 0,
+        byMethod: { fundingPattern: 0, timing: 0, behavior: 0 },
+      });
+    }
+
+    const { rows } = await db.query(`
+      SELECT
+        COUNT(*) as total_clusters,
+        COALESCE(SUM(member_count), 0) as total_members,
+        COALESCE(SUM(total_volume), 0) as total_volume,
+        COALESCE(AVG(member_count), 0) as avg_members,
+        COALESCE(AVG(confidence), 0) as avg_confidence,
+        COUNT(*) FILTER (WHERE detection_method = 'funding_pattern') as funding_clusters,
+        COUNT(*) FILTER (WHERE detection_method = 'timing') as timing_clusters,
+        COUNT(*) FILTER (WHERE detection_method = 'behavior') as behavior_clusters
+      FROM wallet_clusters
+      WHERE is_active = TRUE
+    `);
+
+    const stats = rows[0];
+    res.json({
+      totalClusters: parseInt(stats.total_clusters) || 0,
+      totalMembers: parseInt(stats.total_members) || 0,
+      totalVolume: parseFloat(stats.total_volume) || 0,
+      avgMembers: parseFloat(stats.avg_members) || 0,
+      avgConfidence: parseFloat(stats.avg_confidence) || 0,
+      byMethod: {
+        fundingPattern: parseInt(stats.funding_clusters) || 0,
+        timing: parseInt(stats.timing_clusters) || 0,
+        behavior: parseInt(stats.behavior_clusters) || 0,
+      },
+    });
+  } catch (err) {
+    console.error('Error fetching cluster stats:', err);
+    res.status(500).json({ error: 'Failed to fetch cluster stats' });
   }
 });
 
@@ -573,6 +735,82 @@ app.post('/api/insiders/recompute', async (_req, res) => {
   } catch (err) {
     console.error('Error recomputing insider scores:', err);
     res.status(500).json({ error: 'Failed to recompute insider scores' });
+  }
+});
+
+// ============ ENHANCED INSIDER DETECTION V2 ENDPOINTS ============
+
+// Get top insiders with full score breakdown
+app.get('/api/insiders/v2', async (req, res) => {
+  try {
+    const limit = Math.min(parseInt(req.query.limit as string) || 50, 200);
+    const insiders = await insiderDetectorV2.getTopInsiders(limit);
+    res.json(insiders);
+  } catch (err) {
+    console.error('Error fetching v2 insiders:', err);
+    res.status(500).json({ error: 'Failed to fetch insiders' });
+  }
+});
+
+// Get insider score breakdown for a specific wallet
+app.get('/api/insiders/v2/wallet/:address', async (req, res) => {
+  try {
+    const { address } = req.params;
+    const breakdown = await insiderDetectorV2.getWalletInsiderBreakdown(address);
+    if (!breakdown) {
+      return res.status(404).json({ error: 'Wallet not found or no data' });
+    }
+    res.json(breakdown);
+  } catch (err) {
+    console.error('Error fetching wallet insider breakdown:', err);
+    res.status(500).json({ error: 'Failed to fetch wallet breakdown' });
+  }
+});
+
+// Detect insider activity on a specific market
+app.get('/api/insiders/v2/market/:conditionId', async (req, res) => {
+  try {
+    const { conditionId } = req.params;
+    const alerts = await insiderDetectorV2.detectMarketInsiderActivity(conditionId);
+    res.json({ alerts });
+  } catch (err) {
+    console.error('Error detecting market insider activity:', err);
+    res.status(500).json({ error: 'Failed to analyze market' });
+  }
+});
+
+// Get recent insider alerts (v2)
+app.get('/api/insiders/v2/alerts', async (req, res) => {
+  try {
+    const limit = Math.min(parseInt(req.query.limit as string) || 50, 200);
+    const alerts = await insiderDetectorV2.getRecentAlerts(limit);
+    res.json(alerts);
+  } catch (err) {
+    console.error('Error fetching v2 insider alerts:', err);
+    res.status(500).json({ error: 'Failed to fetch alerts' });
+  }
+});
+
+// Manually trigger v2 insider score recomputation
+app.post('/api/insiders/v2/recompute', async (_req, res) => {
+  try {
+    // Run async, don't wait
+    insiderDetectorV2.computeAllInsiderScores().catch(console.error);
+    res.json({ message: 'V2 insider score recomputation started' });
+  } catch (err) {
+    console.error('Error starting v2 recomputation:', err);
+    res.status(500).json({ error: 'Failed to start recomputation' });
+  }
+});
+
+// Classify all markets by insider risk category
+app.post('/api/insiders/v2/classify-markets', async (_req, res) => {
+  try {
+    const count = await insiderDetectorV2.classifyAllMarkets();
+    res.json({ message: `Classified ${count} markets` });
+  } catch (err) {
+    console.error('Error classifying markets:', err);
+    res.status(500).json({ error: 'Failed to classify markets' });
   }
 });
 
@@ -1944,4 +2182,14 @@ server.listen(PORT, async () => {
 
   // Start daily wallet snapshots for ML training (runs once per day)
   walletProfileService.startScheduledSnapshots(24 * 60 * 60 * 1000);
+
+  // Start cluster detection (runs every hour)
+  // Note: Requires POLYGONSCAN_API_KEY env var for funding tracking
+  if (process.env.POLYGONSCAN_API_KEY) {
+    console.log('[Server] Starting cluster detection services...');
+    fundingTracker.startScheduled(30 * 60 * 1000);  // Funding backfill every 30 minutes
+    clusterDetector.startScheduled(60 * 60 * 1000);  // Cluster detection every hour
+  } else {
+    console.log('[Server] POLYGONSCAN_API_KEY not set, cluster detection disabled');
+  }
 });

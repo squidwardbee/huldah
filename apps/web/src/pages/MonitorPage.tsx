@@ -1,13 +1,15 @@
 import { useState, useEffect, useRef, useMemo } from 'react';
-import { useQuery, useQueryClient } from '@tanstack/react-query';
+import { useQuery, useQueryClient, useMutation } from '@tanstack/react-query';
 import {
   getSubscriptionActivity,
   getUserSubscriptionsDetailed,
+  updateSubscription,
   type WalletActivity,
   type WalletSubscription,
   type WalletProfile
 } from '../lib/intelligenceApi';
 import { useAuthStore } from '../stores/authStore';
+import { WalletSlideout } from '../components/WalletSlideout';
 
 // Derive WebSocket URL from API URL
 const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:3001';
@@ -127,22 +129,50 @@ interface SubscribedWalletCardProps {
   wallet: WalletProfile | null;
   isSelected: boolean;
   onClick: () => void;
+  onOpenSlideout: () => void;
+  onUpdateNickname: (nickname: string) => void;
+  isUpdatingNickname: boolean;
 }
 
-function SubscribedWalletCard({ subscription, wallet, isSelected, onClick }: SubscribedWalletCardProps) {
+function SubscribedWalletCard({
+  subscription,
+  wallet,
+  isSelected,
+  onClick,
+  onOpenSlideout,
+  onUpdateNickname,
+  isUpdatingNickname
+}: SubscribedWalletCardProps) {
+  const [isEditingNickname, setIsEditingNickname] = useState(false);
+  const [nicknameInput, setNicknameInput] = useState('');
   const pnl = wallet?.performance?.totalPnl || 0;
   // Display priority: user's nickname > polymarket username > address
   const displayName = subscription.nickname || wallet?.polymarketUsername;
 
+  const handleStartEdit = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    setNicknameInput(subscription.nickname || '');
+    setIsEditingNickname(true);
+  };
+
+  const handleSaveNickname = () => {
+    onUpdateNickname(nicknameInput.trim());
+    setIsEditingNickname(false);
+  };
+
+  const handleCancelEdit = () => {
+    setIsEditingNickname(false);
+    setNicknameInput('');
+  };
+
   return (
-    <button
-      onClick={onClick}
-      className={`w-full px-3 py-2 text-left transition-colors border-b border-terminal-border/30 ${
+    <div
+      className={`group w-full px-3 py-2 text-left transition-colors border-b border-terminal-border/30 ${
         isSelected ? 'bg-neon-cyan/10' : 'hover:bg-white/[0.02]'
       }`}
     >
       <div className="flex items-center justify-between">
-        <div>
+        <button onClick={onClick} className="flex-1 text-left">
           {displayName ? (
             <>
               <div className="text-white text-sm font-medium">
@@ -157,14 +187,67 @@ function SubscribedWalletCard({ subscription, wallet, isSelected, onClick }: Sub
               {formatAddress(subscription.walletAddress)}
             </div>
           )}
+        </button>
+        <div className="flex items-center gap-2">
+          {wallet && (
+            <span className={`font-mono text-xs ${pnl >= 0 ? 'text-neon-green' : 'text-neon-red'}`}>
+              {pnl >= 0 ? '+' : ''}{formatAmount(pnl)}
+            </span>
+          )}
+          {/* Edit nickname button */}
+          <button
+            onClick={handleStartEdit}
+            className="p-1 text-terminal-muted hover:text-white opacity-0 group-hover:opacity-100 transition-opacity"
+            title="Edit nickname"
+          >
+            <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z" />
+            </svg>
+          </button>
+          {/* Open slideout button */}
+          <button
+            onClick={(e) => { e.stopPropagation(); onOpenSlideout(); }}
+            className="p-1 text-terminal-muted hover:text-neon-cyan transition-colors"
+            title="View wallet details"
+          >
+            <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 7l5 5m0 0l-5 5m5-5H6" />
+            </svg>
+          </button>
         </div>
-        {wallet && (
-          <span className={`font-mono text-xs ${pnl >= 0 ? 'text-neon-green' : 'text-neon-red'}`}>
-            {pnl >= 0 ? '+' : ''}{formatAmount(pnl)}
-          </span>
-        )}
       </div>
-    </button>
+
+      {/* Inline nickname editing */}
+      {isEditingNickname && (
+        <div className="mt-2 flex items-center gap-1" onClick={(e) => e.stopPropagation()}>
+          <input
+            type="text"
+            value={nicknameInput}
+            onChange={(e) => setNicknameInput(e.target.value)}
+            placeholder="Nickname..."
+            className="flex-1 bg-terminal-surface border border-terminal-border rounded px-2 py-1 text-xs text-white placeholder-terminal-muted focus:outline-none focus:border-neon-cyan/50"
+            autoFocus
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') handleSaveNickname();
+              if (e.key === 'Escape') handleCancelEdit();
+            }}
+          />
+          <button
+            onClick={handleSaveNickname}
+            disabled={isUpdatingNickname}
+            className="px-1.5 py-1 text-[10px] font-mono text-neon-green hover:bg-neon-green/10 rounded"
+          >
+            {isUpdatingNickname ? '...' : '✓'}
+          </button>
+          <button
+            onClick={handleCancelEdit}
+            className="px-1.5 py-1 text-[10px] font-mono text-terminal-muted hover:text-white"
+          >
+            ✕
+          </button>
+        </div>
+      )}
+    </div>
   );
 }
 
@@ -172,6 +255,7 @@ export function MonitorPage() {
   const { isAuthenticated, token } = useAuthStore();
   const queryClient = useQueryClient();
   const [filterWallet, setFilterWallet] = useState<string | null>(null);
+  const [slideoutWallet, setSlideoutWallet] = useState<WalletProfile | null>(null);
   const [wsConnected, setWsConnected] = useState(false);
   const ws = useRef<WebSocket | null>(null);
 
@@ -181,6 +265,16 @@ export function MonitorPage() {
     queryFn: getUserSubscriptionsDetailed,
     enabled: isAuthenticated,
     refetchInterval: 60000,
+  });
+
+  // Mutation for updating nickname
+  const updateNicknameMutation = useMutation({
+    mutationFn: ({ walletAddress, nickname }: { walletAddress: string; nickname: string }) =>
+      updateSubscription(walletAddress, { nickname }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['userSubscriptions'] });
+      queryClient.invalidateQueries({ queryKey: ['subscriptionsDetailed'] });
+    },
   });
 
   // Fetch activity feed
@@ -319,6 +413,12 @@ export function MonitorPage() {
               onClick={() => setFilterWallet(
                 filterWallet === subscription.walletAddress ? null : subscription.walletAddress
               )}
+              onOpenSlideout={() => wallet && setSlideoutWallet(wallet)}
+              onUpdateNickname={(nickname) => updateNicknameMutation.mutate({
+                walletAddress: subscription.walletAddress,
+                nickname
+              })}
+              isUpdatingNickname={updateNicknameMutation.isPending}
             />
           ))}
         </div>
@@ -382,6 +482,12 @@ export function MonitorPage() {
           )}
         </div>
       </div>
+
+      {/* Wallet Slideout */}
+      <WalletSlideout
+        wallet={slideoutWallet}
+        onClose={() => setSlideoutWallet(null)}
+      />
     </div>
   );
 }

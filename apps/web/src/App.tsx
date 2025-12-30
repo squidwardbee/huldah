@@ -9,6 +9,8 @@ import { ConnectWallet } from './components/ConnectWallet';
 import { FeaturedMarkets, GlobalNews } from './components/home';
 import { WalletsPage } from './pages/WalletsPage';
 import { MonitorPage } from './pages/MonitorPage';
+import { ClustersPage } from './pages/ClustersPage';
+import { InsidersPage } from './pages/InsidersPage';
 import { useWhaleFeed } from './hooks/useWhaleFeed';
 import { useWalletTrading } from './hooks/useWalletTrading';
 import { wagmiConfig } from './lib/wagmi';
@@ -200,6 +202,7 @@ function Dashboard() {
   const activeTab = location.pathname === '/wallets' ? 'wallets'
     : location.pathname === '/trading' ? 'trading'
     : location.pathname === '/monitor' ? 'monitor'
+    : location.pathname === '/insiders' ? 'insiders'
     : 'home';
 
   // Handle market selection from search
@@ -298,6 +301,12 @@ function Dashboard() {
                 >
                   MONITOR
                 </TabButton>
+                <TabButton
+                  active={activeTab === 'insiders'}
+                  onClick={() => navigate('/insiders')}
+                >
+                  INSIDERS
+                </TabButton>
               </nav>
             </div>
           </div>
@@ -335,6 +344,8 @@ function Dashboard() {
           } />
           <Route path="/wallets" element={<WalletsPage />} />
           <Route path="/monitor" element={<MonitorPage />} />
+          <Route path="/insiders" element={<InsidersPage />} />
+          <Route path="/clusters/:clusterId" element={<ClustersPage />} />
           <Route path="/" element={
             <div className="h-full p-4 overflow-y-auto">
               <HomeView onSelectMarket={handleSelectFeaturedMarket} />

@@ -1,31 +1,15 @@
 -- Insider Detection Schema
 -- Based on signals: new wallets, single-market focus, large bets, pre-resolution timing
 
--- Markets table: Track Polymarket conditions and their resolutions
-CREATE TABLE IF NOT EXISTS markets (
-  condition_id VARCHAR(66) PRIMARY KEY,
-  question TEXT,
-  slug VARCHAR(255),
-  category VARCHAR(100),
-  
-  -- Outcome tracking
-  outcome_yes_price DECIMAL(10, 4),
-  outcome_no_price DECIMAL(10, 4),
-  
-  -- Resolution data
-  resolved BOOLEAN DEFAULT FALSE,
-  resolution_outcome INT,  -- 0 = No, 1 = Yes
-  resolution_time TIMESTAMP,
-  
-  -- Volume/liquidity
-  volume DECIMAL(20, 6) DEFAULT 0,
-  liquidity DECIMAL(20, 6) DEFAULT 0,
-  
-  -- Timestamps
-  end_date TIMESTAMP,
-  created_at TIMESTAMP DEFAULT NOW(),
-  updated_at TIMESTAMP DEFAULT NOW()
-);
+-- Add missing columns to markets table (created in 001_init.sql)
+ALTER TABLE markets ADD COLUMN IF NOT EXISTS category VARCHAR(100);
+ALTER TABLE markets ADD COLUMN IF NOT EXISTS outcome_yes_price DECIMAL(10, 4);
+ALTER TABLE markets ADD COLUMN IF NOT EXISTS outcome_no_price DECIMAL(10, 4);
+ALTER TABLE markets ADD COLUMN IF NOT EXISTS resolution_outcome INT;
+ALTER TABLE markets ADD COLUMN IF NOT EXISTS resolution_time TIMESTAMP;
+ALTER TABLE markets ADD COLUMN IF NOT EXISTS liquidity DECIMAL(20, 6) DEFAULT 0;
+ALTER TABLE markets ADD COLUMN IF NOT EXISTS created_at TIMESTAMP DEFAULT NOW();
+ALTER TABLE markets ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP DEFAULT NOW();
 
 CREATE INDEX IF NOT EXISTS idx_markets_resolved ON markets(resolved);
 CREATE INDEX IF NOT EXISTS idx_markets_resolution_time ON markets(resolution_time);

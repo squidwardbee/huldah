@@ -315,3 +315,279 @@ export async function getSubscriptionStats(): Promise<{
   const { data } = await api.get('/api/intelligence/subscriptions/stats');
   return data;
 }
+
+// ============ CLUSTER API ============
+
+export interface ClusterMember {
+  address: string;
+  role: 'primary' | 'funding' | 'receiving' | 'unknown';
+  volume: number;
+  pnl: number;
+  winRate: number;
+  insiderScore: number;
+  fundingAmount?: number;
+  fundingDate?: string;
+}
+
+export interface Cluster {
+  clusterId: string;
+  detectionMethod: 'funding_pattern' | 'timing' | 'behavior' | 'manual';
+  confidence: number;
+  memberCount: number;
+  totalVolume: number;
+  totalPnl: number;
+  avgWinRate: number;
+  avgInsiderScore: number;
+  marketsTraded: number;
+  fundingSource?: string;
+  fundingSourceType?: string;
+  totalFunded?: number;
+  members: ClusterMember[];
+  createdAt: string;
+  lastActivity?: string;
+}
+
+export interface ClusterListResponse {
+  clusters: Cluster[];
+  total: number;
+}
+
+export interface ClusterStats {
+  totalClusters: number;
+  totalMembers: number;
+  totalVolume: number;
+  avgMembers: number;
+  avgConfidence: number;
+  byMethod: {
+    fundingPattern: number;
+    timing: number;
+    behavior: number;
+  };
+}
+
+export interface FundingSummary {
+  totalDeposited: number;
+  totalWithdrawn: number;
+  netFunding: number;
+  primarySource: string | null;
+  primarySourceType: string | null;
+  depositCount: number;
+  withdrawalCount: number;
+}
+
+export async function getClusterList(params: {
+  method?: string;
+  minMembers?: number;
+  minVolume?: number;
+  limit?: number;
+  offset?: number;
+} = {}): Promise<ClusterListResponse> {
+  const queryParams = new URLSearchParams();
+
+  if (params.method) queryParams.set('method', params.method);
+  if (params.minMembers !== undefined) queryParams.set('minMembers', String(params.minMembers));
+  if (params.minVolume !== undefined) queryParams.set('minVolume', String(params.minVolume));
+  if (params.limit !== undefined) queryParams.set('limit', String(params.limit));
+  if (params.offset !== undefined) queryParams.set('offset', String(params.offset));
+
+  const { data } = await api.get(`/api/clusters?${queryParams.toString()}`);
+  return data;
+}
+
+export async function getCluster(clusterId: string): Promise<Cluster | null> {
+  try {
+    const { data } = await api.get(`/api/clusters/${clusterId}`);
+    return data;
+  } catch (err: any) {
+    if (err.response?.status === 404) return null;
+    throw err;
+  }
+}
+
+export async function getClusterTrades(clusterId: string, limit = 50): Promise<any[]> {
+  const { data } = await api.get(`/api/clusters/${clusterId}/trades?limit=${limit}`);
+  return data;
+}
+
+export async function getClusterStats(): Promise<ClusterStats> {
+  const { data } = await api.get('/api/clusters/stats');
+  return data;
+}
+
+export async function getWalletCluster(address: string): Promise<Cluster | null> {
+  try {
+    const { data } = await api.get(`/api/intelligence/wallets/${address}/cluster`);
+    return data;
+  } catch (err: any) {
+    if (err.response?.status === 404) return null;
+    throw err;
+  }
+}
+
+export async function getWalletFunding(address: string): Promise<FundingSummary> {
+  const { data } = await api.get(`/api/intelligence/wallets/${address}/funding`);
+  return data;
+}
+
+export async function triggerClusterDetection(): Promise<{ message: string }> {
+  const { data } = await api.post('/api/clusters/detect');
+  return data;
+}
+
+export async function triggerFundingBackfill(minVolume = 10000, limit = 100): Promise<{ message: string }> {
+  const { data } = await api.post(`/api/clusters/backfill-funding?minVolume=${minVolume}&limit=${limit}`);
+  return data;
+}
+
+// ============ INSIDER DETECTION V2 ============
+
+export interface InsiderSignals {
+  walletAddress: string;
+
+  // Temporal signals
+  preResolution1hAccuracy: number;
+  preResolution4hAccuracy: number;
+  preResolution24hAccuracy: number;
+  preResolutionSampleSize: number;
+  newsAnticipationScore: number;
+  timingConsistencyScore: number;
+
+  // Trade quality signals
+  entryPriceAdvantage: number;
+  lowOddsWinRate: number;
+  lowOddsSampleSize: number;
+  longshotWinRate: number;
+  longshotSampleSize: number;
+  convictionSizingScore: number;
+
+  // Category risk signals
+  highRiskCategoryWinRate: number;
+  highRiskCategoryVolume: number;
+  categoryConcentration: number;
+  primaryCategory: string | null;
+
+  // Network signals
+  clusterCorrelationScore: number;
+  fundingOverlapScore: number;
+  timingSyncScore: number;
+  isClusterLeader: boolean;
+  clusterId: number | null;
+
+  // Statistical signals
+  adjustedWinRate: number;
+  streakAnomalyScore: number;
+  profitDistributionSkew: number;
+  sharpeAnomalyScore: number;
+
+  // Component scores
+  temporalScore: number;
+  tradeQualityScore: number;
+  categoryRiskScore: number;
+  networkScore: number;
+  statisticalScore: number;
+  totalInsiderScore: number;
+
+  lastComputed: string;
+}
+
+export interface InsiderSuspect {
+  address: string;
+  polymarketUsername?: string;
+  firstSeen: string;
+  totalTrades: number;
+  totalVolume: number;
+  winCount: number;
+  lossCount: number;
+  winRate: number;
+
+  // Component scores
+  temporalScore: number;
+  tradeQualityScore: number;
+  categoryRiskScore: number;
+  networkScore: number;
+  statisticalScore: number;
+  totalInsiderScore: number;
+
+  // Key signals
+  preResolution1hAccuracy: number;
+  preResolution24hAccuracy: number;
+  lowOddsWinRate: number;
+  lowOddsSampleSize: number;
+  highRiskCategoryWinRate: number;
+  primaryCategory: string | null;
+  isClusterLeader: boolean;
+
+  tags: string[];
+  lastComputed: string;
+}
+
+export interface InsiderAlert {
+  id: number;
+  conditionId: string;
+  marketQuestion: string;
+  alertType: string;
+  severity: 'low' | 'medium' | 'high' | 'critical';
+  wallets: string[];
+  totalVolume: number;
+  betDirection: 'YES' | 'NO';
+  oddsAtTime: number;
+  description: string;
+  riskCategory: string;
+  confidenceScore: number;
+  verifiedOutcome?: boolean;
+  resolutionResult?: string;
+  createdAt: string;
+}
+
+/**
+ * Get top insider suspects with full score breakdown
+ */
+export async function getInsidersV2(limit = 50): Promise<InsiderSuspect[]> {
+  const { data } = await api.get(`/api/insiders/v2?limit=${limit}`);
+  return data;
+}
+
+/**
+ * Get detailed insider score breakdown for a specific wallet
+ */
+export async function getWalletInsiderBreakdown(address: string): Promise<InsiderSignals | null> {
+  try {
+    const { data } = await api.get(`/api/insiders/v2/wallet/${address}`);
+    return data;
+  } catch (err: any) {
+    if (err.response?.status === 404) return null;
+    throw err;
+  }
+}
+
+/**
+ * Detect insider activity on a specific market
+ */
+export async function detectMarketInsiderActivity(conditionId: string): Promise<{ alerts: InsiderAlert[] }> {
+  const { data } = await api.get(`/api/insiders/v2/market/${conditionId}`);
+  return data;
+}
+
+/**
+ * Get recent insider alerts
+ */
+export async function getInsiderAlertsV2(limit = 50): Promise<InsiderAlert[]> {
+  const { data } = await api.get(`/api/insiders/v2/alerts?limit=${limit}`);
+  return data;
+}
+
+/**
+ * Trigger v2 insider score recomputation
+ */
+export async function triggerInsiderRecomputeV2(): Promise<{ message: string }> {
+  const { data } = await api.post('/api/insiders/v2/recompute');
+  return data;
+}
+
+/**
+ * Classify all markets by insider risk category
+ */
+export async function classifyMarketRisk(): Promise<{ message: string }> {
+  const { data } = await api.post('/api/insiders/v2/classify-markets');
+  return data;
+}

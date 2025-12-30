@@ -25,7 +25,10 @@
       "WebFetch(domain:viem.sh)",
       "WebFetch(domain:tanstack.com)",
       "WebFetch(domain:tailwindcss.com)",
-      "Bash(curl:*)"
+      "Bash(curl:*)",
+      "Bash(npx tsx:*)",
+      "Bash(docker exec:*)",
+      "Bash(timeout 5 pnpm:*)"
     ]
   }
 }

@@ -1,8 +1,10 @@
 import { useState, useEffect } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
+import { Link } from 'react-router-dom';
 import {
   getWalletDetail,
   getWalletCategories,
+  getWalletCluster,
   subscribeToWallet,
   unsubscribeFromWallet,
   updateSubscription,
@@ -11,6 +13,7 @@ import {
   type WalletTrade,
   type WalletPosition,
   type CategoryPerformance,
+  type Cluster,
 } from '../lib/intelligenceApi';
 import { useAuthStore } from '../stores/authStore';
 
@@ -40,6 +43,12 @@ export function WalletSlideout({ wallet, onClose }: WalletSlideoutProps) {
   const { data: categories } = useQuery({
     queryKey: ['walletCategories', wallet?.address],
     queryFn: () => wallet ? getWalletCategories(wallet.address) : [],
+    enabled: !!wallet,
+  });
+
+  const { data: cluster } = useQuery({
+    queryKey: ['walletCluster', wallet?.address],
+    queryFn: () => wallet ? getWalletCluster(wallet.address) : null,
     enabled: !!wallet,
   });
 
@@ -223,7 +232,7 @@ export function WalletSlideout({ wallet, onClose }: WalletSlideoutProps) {
         </div>
 
         <div className="flex-1 overflow-y-auto p-6">
-          {activeTab === 'overview' && <OverviewTab wallet={wallet} categories={categories || []} />}
+          {activeTab === 'overview' && <OverviewTab wallet={wallet} categories={categories || []} cluster={cluster} />}
           {activeTab === 'trades' && <TradesTab trades={detailData?.recentTrades || []} />}
           {activeTab === 'positions' && <PositionsTab positions={detailData?.positions || []} />}
         </div>
@@ -232,11 +241,14 @@ export function WalletSlideout({ wallet, onClose }: WalletSlideoutProps) {
   );
 }
 
-function OverviewTab({ wallet, categories }: { wallet: WalletProfile; categories: CategoryPerformance[] }) {
+function OverviewTab({ wallet, categories, cluster }: { wallet: WalletProfile; categories: CategoryPerformance[]; cluster?: Cluster | null }) {
   const { performance, activity, scores, behavior } = wallet;
 
   return (
     <div className="space-y-6">
+      {/* Cluster Badge */}
+      {cluster && <ClusterBadge cluster={cluster} />}
+
       <div className="grid grid-cols-3 gap-3">
         <ScoreCard label="Smart Money" value={scores.smartMoneyScore} color={scores.smartMoneyScore >= 50 ? 'green' : 'muted'} />
         <ScoreCard label="Insider Score" value={scores.insiderScore} color={scores.insiderScore >= 50 ? 'red' : scores.insiderScore >= 30 ? 'amber' : 'muted'} />
@@ -385,4 +397,64 @@ function formatAmount(amount: number): string {
 
 function formatPnl(pnl: number): string {
   return (pnl >= 0 ? '+' : '') + formatAmount(pnl);
+}
+
+function ClusterBadge({ cluster }: { cluster: Cluster }) {
+  const methodLabels: Record<string, string> = {
+    funding_pattern: 'Funding Pattern',
+    timing: 'Timing Correlation',
+    behavior: 'Behavioral',
+    manual: 'Manual',
+  };
+
+  const methodColors: Record<string, string> = {
+    funding_pattern: 'border-neon-amber/50 bg-neon-amber/10',
+    timing: 'border-neon-cyan/50 bg-neon-cyan/10',
+    behavior: 'border-neon-purple/50 bg-neon-purple/10',
+    manual: 'border-terminal-border bg-terminal-surface',
+  };
+
+  return (
+    <div className={`rounded-lg p-4 border ${methodColors[cluster.detectionMethod] || methodColors.manual}`}>
+      <div className="flex items-start justify-between mb-3">
+        <div className="flex items-center gap-2">
+          <svg className="w-5 h-5 text-neon-amber" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13.828 10.172a4 4 0 00-5.656 0l-4 4a4 4 0 105.656 5.656l1.102-1.101m-.758-4.899a4 4 0 005.656 0l4-4a4 4 0 00-5.656-5.656l-1.1 1.1" />
+          </svg>
+          <span className="text-white font-medium">Part of Wallet Cluster</span>
+        </div>
+        <Link
+          to={`/clusters/${cluster.clusterId}`}
+          className="text-xs font-mono text-neon-cyan hover:underline"
+        >
+          View Details →
+        </Link>
+      </div>
+
+      <div className="grid grid-cols-2 gap-3 text-sm">
+        <div>
+          <span className="text-terminal-muted text-xs">Detection</span>
+          <div className="text-white font-mono text-xs">{methodLabels[cluster.detectionMethod]}</div>
+        </div>
+        <div>
+          <span className="text-terminal-muted text-xs">Members</span>
+          <div className="text-white font-mono text-xs">{cluster.memberCount} wallets</div>
+        </div>
+        <div>
+          <span className="text-terminal-muted text-xs">Combined Volume</span>
+          <div className="text-white font-mono text-xs">{formatAmount(cluster.totalVolume)}</div>
+        </div>
+        <div>
+          <span className="text-terminal-muted text-xs">Combined PnL</span>
+          <div className={`font-mono text-xs ${cluster.totalPnl >= 0 ? 'text-neon-green' : 'text-neon-red'}`}>
+            {formatPnl(cluster.totalPnl)}
+          </div>
+        </div>
+      </div>
+
+      <div className="mt-2 text-xs text-terminal-muted">
+        {(cluster.confidence * 100).toFixed(0)}% confidence · Avg insider: {cluster.avgInsiderScore}
+      </div>
+    </div>
+  );
 }

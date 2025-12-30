@@ -45,23 +45,52 @@ async function runMigrations() {
 
   console.log(`📁 Found ${files.length} migration files:\n`);
 
-  for (const file of files) {
-    console.log(`   Applying ${file}...`);
-    
-    try {
-      const sql = readFileSync(join(migrationsDir, file), 'utf-8');
-      await db.query(sql);
-      console.log(`   ✅ ${file} applied successfully`);
-    } catch (err: any) {
-      // Some errors are expected (e.g., table already exists)
-      if (err.message.includes('already exists')) {
-        console.log(`   ⚠️  ${file} - some objects already exist (OK)`);
-      } else if (err.message.includes('does not exist')) {
-        console.log(`   ⚠️  ${file} - some dependencies missing, will retry`);
-      } else {
-        console.error(`   ❌ ${file} failed:`, err.message);
+  // Track files that need retry
+  let pendingFiles = [...files];
+  let maxPasses = 5;
+  let pass = 1;
+
+  while (pendingFiles.length > 0 && pass <= maxPasses) {
+    if (pass > 1) {
+      console.log(`\n🔄 Retry pass ${pass} for ${pendingFiles.length} remaining files...\n`);
+    }
+
+    const stillPending: string[] = [];
+
+    for (const file of pendingFiles) {
+      console.log(`   Applying ${file}...`);
+
+      try {
+        const sql = readFileSync(join(migrationsDir, file), 'utf-8');
+        await db.query(sql);
+        console.log(`   ✅ ${file} applied successfully`);
+      } catch (err: any) {
+        // Some errors are expected (e.g., table already exists)
+        if (err.message.includes('already exists')) {
+          console.log(`   ⚠️  ${file} - some objects already exist (OK)`);
+        } else if (err.message.includes('does not exist') || err.message.includes('violates foreign key')) {
+          console.log(`   ⏳ ${file} - dependencies missing, will retry`);
+          if (pass === maxPasses) {
+            console.log(`      Error: ${err.message}`);
+          }
+          stillPending.push(file);
+        } else {
+          console.error(`   ❌ ${file} failed:`, err.message);
+          // Still try to retry if it's a dependency issue
+          if (pass < maxPasses) {
+            stillPending.push(file);
+          }
+        }
       }
     }
+
+    pendingFiles = stillPending;
+    pass++;
+  }
+
+  if (pendingFiles.length > 0) {
+    console.log(`\n⚠️  Warning: ${pendingFiles.length} migrations could not be applied:`);
+    pendingFiles.forEach(f => console.log(`   - ${f}`));
   }
 
   console.log('\n✅ Migrations complete!\n');
